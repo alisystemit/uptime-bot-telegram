@@ -170,7 +170,32 @@ function statusName(string $status): string
 /** ایموجی وضعیت */
 function statusEmoji(string $status): string
 {
-    return ['up' => '🟢', 'down' => '🔴', 'unknown' => '🟡'][$status] ?? '⚪️';
+    return ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'unknown' => '🟡'][$status] ?? '⚪️';
+}
+
+/** نام فارسی وضعیت (شامل حالت «کند» که وضعیتِ ذخیره‌شده نیست) */
+function statusLabel(string $status): string
+{
+    return ['up' => 'فعال', 'down' => 'قطع', 'slow' => 'کند', 'unknown' => 'نامشخص'][$status] ?? $status;
+}
+
+/**
+ * وضعیت نمایشی یک سایت.
+ * «کند» یک لایهٔ روی «فعال» است: سایت جواب می‌دهد ولی از آستانهٔ max_ms
+ * کندتر است. برای همهٔ محاسبات آپتایم همچنان «فعال» شمرده می‌شود.
+ */
+function siteState(array $s): string
+{
+    if ((int)($s['paused'] ?? 0) === 1) return 'paused';
+    $st = (string)($s['status'] ?? 'unknown');
+    if ($st === 'up' && (int)($s['slow'] ?? 0) === 1) return 'slow';
+    return $st;
+}
+
+/** کلاس رنگی نمایشی برای صفحهٔ وب */
+function stateClass(string $st): string
+{
+    return ['up' => 'up', 'down' => 'down', 'slow' => 'slow', 'paused' => 'paused', 'unknown' => 'unknown'][$st] ?? 'unknown';
 }
 
 /** نوار رنگیِ آخرین N چک (برای ربات) — هر کاراکتر یک چک */
@@ -196,4 +221,102 @@ function statusUrl(array $cfg, string $shareToken): string
 function faMoney($n): string
 {
     return faNum(number_format((int)$n, 0, '.', ',')) . ' تومان';
+}
+
+/** بریدن متن با حفظ ابتدا/انتها */
+function truncateFa(string $s, int $max = 60, string $tail = '…'): string
+{
+    $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
+    if ($max <= 0 || mb_strlen($s) <= $max) return $s;
+    return mb_substr($s, 0, $max - 1) . $tail;
+}
+
+/** «۱۲ روز و ۳ ساعت» برای انقضا — ورودی: ثانیهٔ باقی‌مانده */
+function faLeft(int $sec): string
+{
+    if ($sec < 0) return 'منقضی شده';
+    $d = intdiv($sec, 86400);
+    $h = intdiv($sec % 86400, 3600);
+    if ($d > 0) return faNum($d) . ' روز' . ($h > 0 ? ' و ' . faNum($h) . ' ساعت' : '');
+    if ($h > 0) return faNum($h) . ' ساعت';
+    $m = intdiv($sec % 3600, 60);
+    return faNum(max(1, $m)) . ' دقیقه';
+}
+
+/** تاریخ شمسی نیست؛ فقط «۲۰۲۶/۰۱/۰۵» از یک رشتهٔ تاریخ MySQL */
+function faDay(?string $datetime, float $tzOffset = 3.5): string
+{
+    if (!$datetime) return '—';
+    $ts = strtotime($datetime);
+    if ($ts === false) return '—';
+    return faNum(date('Y/m/d', $ts + (int)round($tzOffset * 3600)));
+}
+
+/** نوار درصد متنی برای تلگرام: 100 → ██████████ */
+function progressBar(?float $pct, int $len = 10): string
+{
+    $len = max(3, $len);
+    if ($pct === null) return str_repeat('░', $len);
+    $p = max(0.0, min(100.0, (float)$pct));
+    $fill = (int)round($p / 100 * $len);
+    $out = $fill <= 0 ? '' : ($fill >= $len ? str_repeat('█', $len) : str_repeat('█', $fill - 1) . '▌');
+    $used = function_exists('mb_strlen') ? mb_strlen($out) : strlen($out);
+    return $out . str_repeat('░', max(0, $len - $used));
+}
+
+/** تبدیل ارقام فارسی/عربی به لاتین و حذف جداکننده‌ها — برای ورودی عددی کاربر */
+function faToLatin(string $s): string
+{
+    $s = strtr($s, ['۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+                    '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+                    '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+                    '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9']);
+    $s = strtr($s, ['٫' => '.', '،' => ',', '٬' => ',']);
+    return $s;
+}
+
+/**
+ * تجزیهٔ دستور تلگرام: «/add@MyBot https://x» → ['cmd' => 'add', 'rest' => 'https://x']
+ */
+function parseCommand(string $text): array
+{
+    $text = trim($text);
+    if ($text === '' || $text[0] !== '/') return ['cmd' => '', 'rest' => '', 'args' => []];
+    $text = preg_replace('/[ \t]+/', ' ', $text) ?? $text;
+    $parts = explode(' ', $text, 2);
+    $head = (string)preg_replace('/@[A-Za-z0-9_]+$/', '', $parts[0]);
+    $rest = trim($parts[1] ?? '');
+    return [
+        'cmd' => strtolower(mb_substr($head, 1)),
+        'rest' => $rest,
+        'args' => $rest === '' ? [] : (preg_split('/\s+/u', $rest) ?: []),
+    ];
+}
+
+/**
+ * ساخت توکن یکتا در یک ستون (بدون نیاز به rand برخوردی).
+ * @param callable(string):bool $exists
+ */
+function uniqueToken(int $len, callable $exists): string
+{
+    for ($i = 0; $i < 12; $i++) {
+        $t = makeShareToken($len);
+        if (!$exists($t)) return $t;
+    }
+    return makeShareToken($len + 10);
+}
+
+/** نام کوتاه دامنه برای نمایش */
+function baseDomain(string $host): string
+{
+    $host = strtolower(trim($host));
+    $host = preg_replace('/^\[|\]$/', '', $host) ?? $host;
+    if (filter_var($host, FILTER_VALIDATE_IP) !== false) return $host;
+    $parts = explode('.', $host);
+    $n = count($parts);
+    if ($n <= 2) return $host;
+    // دامنه‌های چندسطحی مثل co.uk / com.ir
+    $two = ['co', 'com', 'net', 'org', 'gov', 'edu', 'ac', 'or', 'ne', 'go'];
+    if (in_array($parts[$n - 2], $two, true) && $n >= 3) return $parts[$n - 3] . '.' . $parts[$n - 2] . '.' . $parts[$n - 1];
+    return $parts[$n - 2] . '.' . $parts[$n - 1];
 }

@@ -18,8 +18,12 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/util.php';
     require_once __DIR__ . '/db.php';
     require_once UPTIME_ROOT . '/botapi.php';
+    require_once __DIR__ . '/ssl.php';
+    require_once __DIR__ . '/group.php';
     require_once __DIR__ . '/monitor.php';
     require_once __DIR__ . '/stats.php';
+    require_once __DIR__ . '/page.php';
+    require_once __DIR__ . '/groupbot.php';
     require_once __DIR__ . '/bot.php';
 }
 

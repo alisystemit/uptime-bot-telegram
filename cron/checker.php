@@ -21,6 +21,7 @@
  *      --json       خروجی JSON
  *      --quiet      بدون خروجی متنی
  *      --selftest   فقط سلامت سیستم (بدون چک سایت‌ها) — برای تست نصب
+ *      --maintenance اجرای اجباری نگهداری (گواهی SSL، WHOIS دامنه، آمار پاسخ)
  */
 
 // ---------- گارد وب (در CLI بی‌اثر است) ----------
@@ -43,6 +44,7 @@ $optDaemon  = false;
 $optJson    = false;
 $optQuiet   = false;
 $optSelf    = false;
+$optMaint   = false;
 $optRounds  = 0;
 foreach ($argv as $a) {
     if ($a === '--once')          $optOnce = true;
@@ -50,6 +52,7 @@ foreach ($argv as $a) {
     elseif ($a === '--json')      $optJson = true;
     elseif ($a === '--quiet' || $a === '-q') $optQuiet = true;
     elseif ($a === '--selftest')  $optSelf = true;
+    elseif ($a === '--maintenance' || $a === '--maint') $optMaint = true;
     elseif (preg_match('/^--rounds=(\d+)$/', $a, $m)) $optRounds = (int)$m[1];
     elseif ($a === '--help' || $a === '-h') {
         $txt = "Uptime checker\n"
@@ -57,6 +60,7 @@ foreach ($argv as $a) {
             . "  --daemon      حلقهٔ دائمی\n"
             . "  --rounds=N    تعداد نوبت (پیش‌فرض ۳)\n"
             . "  --json        خروجی JSON\n"
+            . "  --maintenance نگهداری (SSL/WHOIS/آمار پاسخ)\n"
             . "  --selftest    بررسی سلامت بدون چک\n";
         echo $txt;
         exit(0);
@@ -107,9 +111,29 @@ try {
 
 if ($optSelf) {
     $e = Stats::engine();
-    $out = ['ok' => true, 'interval' => $e['interval'], 'last_round' => $e['last_round'], 'paused' => $e['paused']];
+    $out = [
+        'ok' => true,
+        'interval' => $e['interval'],
+        'last_round' => $e['last_round'],
+        'paused' => $e['paused'],
+        'curl' => function_exists('curl_multi_init'),
+        'openssl' => Ssl::supported(),
+        'whois' => Domain::supported(),
+    ];
     if ($optJson) echo json_encode($out, JSON_UNESCAPED_UNICODE);
-    else $emit('OK interval=' . $e['interval'] . ' last=' . ($e['last_round'] ?? 'never') . ($e['paused'] ? ' PAUSED' : ''));
+    else $emit('OK interval=' . $e['interval'] . ' last=' . ($e['last_round'] ?? 'never') . ($e['paused'] ? ' PAUSED' : '')
+        . ' curl=' . ($out['curl'] ? 'y' : 'n') . ' openssl=' . ($out['openssl'] ? 'y' : 'n') . ' whois=' . ($out['whois'] ? 'y' : 'n'));
+    exit(0);
+}
+
+if ($optMaint) {
+    $r = Monitor::maintenance(true);
+    if ($optJson) {
+        header('Content-Type: application/json; charset=utf-8');
+        echo json_encode(['ok' => true, 'ssl' => $r['ssl'], 'domains' => $r['domains'], 'resp' => $r['resp']], JSON_UNESCAPED_UNICODE);
+    } else {
+        $emit(sprintf('MAINT ssl=%d domains=%d resp=%d', $r['ssl'], $r['domains'], $r['resp']));
+    }
     exit(0);
 }
 

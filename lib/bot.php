@@ -27,12 +27,24 @@ class Bot
             $this->onCallback($update['callback_query']);
             return;
         }
+        // پیام کانال (کانال‌ها message معمولی ندارند)
+        if (!empty($update['channel_post'])) {
+            $g = new GroupBot($this->cfg);
+            $g->onChannelPost((array)$update['channel_post']);
+            return;
+        }
         $msg = $update['message'] ?? null;
         if (!$msg) return;
-        if (($msg['chat']['type'] ?? 'private') !== 'private') return;
         $from = $msg['from'] ?? null;
         if (!$from) return;
-        $this->onMessage($msg, $from);
+        $chatType = (string)($msg['chat']['type'] ?? 'private');
+        if ($chatType !== 'private') {
+            // گروه و کانال — منطق جدا در GroupBot
+            $g = new GroupBot($this->cfg);
+            $g->onMessage((array)$msg, (array)$from);
+            return;
+        }
+        $this->onMessage((array)$msg, (array)$from);
     }
 
     // ================================================================ کاربر
@@ -161,6 +173,13 @@ class Bot
         }
         $this->syncPlan();
 
+        // لینک عمیق: /start site_<token> (دعوت به اشتراک یک مانیتور)
+        $p = parseCommand($text);
+        if ($p['cmd'] === 'start' && $p['rest'] !== '') {
+            $this->handleStartPayload($p['rest']);
+            return;
+        }
+
         // بدون متن (عکس/فایل/استیکر) — فقط در صورت نیاز به پرداخت پذیرفته می‌شود
         if ($text === '' && !isset($msg['text'])) {
             if ($user['step'] === 'await_payment') {
@@ -178,8 +197,8 @@ class Bot
 
     private function handleCommand(string $text, array $msg): void
     {
-        $cmd = str_replace(botUsername(), '', $text);
-        $cmd = trim($cmd);
+        $cmd = trim(str_replace(botUsername(), '', $text));
+        $p = parseCommand($cmd);
 
         switch ($cmd) {
             case '/start':
@@ -205,12 +224,29 @@ class Bot
             case '/sites':
             case '📋 سایت‌های من':
                 $this->clearStep();
-                $this->sendSitesList();
+                $this->send($this->sitesListText(), $this->sitesListMenu());
+                return;
+            case '/rank':
+            case '📊 رنکینگ':
+                $this->clearStep();
+                $this->send($this->rankingText(), $this->rankingMenu());
                 return;
             case '/report':
+            case '📊 رنکینگ':
+                $this->clearStep();
+                $this->send($this->rankingText(), $this->rankingMenu());
+                return;
             case '📈 گزارش من':
                 $this->clearStep();
                 $this->send($this->reportText(), $this->mainMenu());
+                return;
+            case '/shared':
+            case '/domains':
+            case '/incidents':
+                $this->clearStep();
+                if ($p['cmd'] === 'shared') $this->send($this->sharedText(), $this->sharedMenu());
+                elseif ($p['cmd'] === 'domains') $this->send($this->domainText(), $this->domainMenu());
+                else $this->send($this->userIncidentsText(), $this->mainMenu());
                 return;
         }
 
@@ -235,6 +271,15 @@ class Bot
                 return;
             case '⚙️ تنظیمات':
                 $this->send($this->settingsText(), $this->settingsMenu());
+                return;
+            case '👥 مانیتورهای مشترک':
+                $this->send($this->sharedText(), $this->sharedMenu());
+                return;
+            case '🌐 دامنه‌های من':
+                $this->send($this->domainText(), $this->domainMenu());
+                return;
+            case '📜 رخدادهای من':
+                $this->send($this->userIncidentsText(), $this->mainMenu());
                 return;
             case '⏸ توقف چک‌ها':
                 $this->pauseUser();
@@ -318,6 +363,19 @@ class Bot
                 $this->stepCodeGen($text);
                 return true;
 
+            case 'await_maxms':
+                $this->stepMaxMs($text);
+                return true;
+
+            case 'await_keyword':
+                $this->stepKeyword($text);
+                return true;
+
+            case 'await_domain':
+                if ($text === '❌ انصراف') { $this->clearStep(); $this->send('انصراف شد.', $this->domainMenu()); return true; }
+                $this->stepAddDomain($text);
+                return true;
+
             case 'await_userop':
                 $this->stepUserOp($text);
                 return true;
@@ -377,9 +435,10 @@ class Bot
             return;
         }
         try {
+            $shareToken = uniqueToken(20, static fn(string $t): bool => (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `share_token` = ?', [$t]) > 0);
             Db::q(
-                'INSERT INTO `site` (`user_id`,`target`,`label`,`type`,`host`,`port`,`created_at`) VALUES (?,?,?,?,?,?,NOW())',
-                [$this->uid, $norm['target'], mb_substr($norm['label'], 0, 200), $norm['type'], $norm['host'], (int)$norm['port']]
+                'INSERT INTO `site` (`user_id`,`chat_id`,`target`,`label`,`type`,`host`,`port`,`share_token`,`created_at`) VALUES (?,0,?,?,?,?,?,?,NOW())',
+                [$this->uid, $norm['target'], mb_substr($norm['label'], 0, 200), $norm['type'], $norm['host'], (int)$norm['port'], $shareToken]
             );
         } catch (Throwable $e) {
             $this->send("❌ خطا در ثبت سایت. دوباره تلاش کنید.", $this->mainMenu());
@@ -403,10 +462,373 @@ class Bot
         $this->send($txt, $site ? BotApi::ikb([[['text' => '📜 جزئیات سایت', 'callback_data' => 'site:' . $siteId]]]) : $this->mainMenu());
     }
 
+    // ================================================================ اشتراک و دعوت
+
+    /**
+     * لینک عمیق /start <payload>
+     *   site_<token> → دعوت به پیگیری یک مانیتورِ مشترک
+     */
+    private function handleStartPayload(string $payload): void
+    {
+        $payload = trim($payload);
+        if (strncmp($payload, 'site_', 5) === 0) {
+            $token = substr($payload, 5);
+            $site = Db::one('SELECT * FROM `site` WHERE `share_token` = ?', [$token]);
+            if (!$site) {
+                $this->clearStep();
+                $this->send("❌ این دعوت‌نامه معتبر نیست یا مانیتور حذف شده است.", $this->mainMenu());
+                return;
+            }
+            $owner = (string)Db::val('SELECT `name` FROM `user` WHERE `id` = ?', [(int)$site['user_id']]);
+            $name = tgH($site['label'] ?: $site['target']);
+            $u24 = Stats::uptime($site, 1);
+
+            $already = Db::one('SELECT * FROM `site_share` WHERE `site_id` = ? AND `user_id` = ?', [(int)$site['id'], $this->uid]);
+            if ($already) {
+                $this->clearStep();
+                $this->send("ℹ️ شما قبلاً این مانیتور را دنبال می‌کنید.\n\n🔗 <code>" . $name . "</code>\n"
+                    . "📈 آپتایم ۲۴س: " . faPct($u24['pct']), $this->sharedMenu());
+                return;
+            }
+            if ((int)$site['user_id'] === $this->uid) {
+                $this->clearStep();
+                $this->send('این مانیتور متعلق به خودِ شماست. 🙂', $this->mainMenu());
+                return;
+            }
+            $this->setStep('await_invite', ['site' => (int)$site['id'], 'token' => $token]);
+            $this->send("👥 <b>دعوت به پیگیری یک مانیتور</b>\n\n"
+                . "🔗 مانیتور: <code>{$name}</code>\n"
+                . "👤 مالک: " . tgH(truncateFa($owner, 40)) . "\n"
+                . "📈 آپتایم ۲۴س: " . faPct($u24['pct']) . "\n\n"
+                . "با پذیرش، از این پس هر قطعی/برقراریِ این مانیتور را <b>در چت خصوصی خودتان</b> دریافت می‌کنید.\n"
+                . "می‌توانید فقط ناظر باشید یا اجازهٔ مدیریت هم بگیرید.",
+                BotApi::ikb([
+                    [['text' => '👁️ فقط ناظر (اعلان‌ها)', 'callback_data' => 'sacc:' . (int)$site['id'] . ':viewer'],
+                     ['text' => '🛠 ناظر + مدیر', 'callback_data' => 'sacc:' . (int)$site['id'] . ':manager']],
+                    [['text' => '❌ نمی‌خواهم', 'callback_data' => 'menu']],
+                ]));
+            return;
+        }
+        $this->clearStep();
+        $this->send($this->welcome(), $this->mainMenu());
+    }
+
+    private function acceptInvite(int $siteId, string $role): void
+    {
+        $site = Db::one('SELECT * FROM `site` WHERE `id` = ?', [$siteId]);
+        if (!$site) { $this->clearStep(); $this->send('❌ این مانیتور دیگر وجود ندارد.', $this->mainMenu()); return; }
+        $role = $role === 'manager' ? 'manager' : 'viewer';
+        try {
+            Db::q(
+                'INSERT INTO `site_share` (`site_id`,`user_id`,`role`,`notify`,`created_at`) VALUES (?,?,?,1,NOW())
+                 ON DUPLICATE KEY UPDATE `role` = VALUES(`role`)',
+                [$siteId, $this->uid, $role]
+            );
+        } catch (Throwable $e) {
+            $this->send('❌ ثبت اشتراک ناموفق بود.', $this->mainMenu());
+            return;
+        }
+        Db::logEvent($this->uid, 'accept_invite', (string)$siteId);
+        $this->clearStep();
+        $this->send("✅ <b>پیگیری این مانیتور فعال شد</b>\n\n"
+            . "🔗 <code>" . tgH($site['label'] ?: $site['target']) . "</code>\n"
+            . "🛡 نقش شما: " . ($role === 'manager' ? '🛠 ناظر + مدیر' : '👁️ ناظر') . "\n"
+            . "🔔 هر قطعی یا برقراری در همین چت به شما اطلاع داده می‌شود.\n"
+            . "برای دیدن لیست: /shared",
+            BotApi::ikb([
+                [['text' => '📜 جزئیات مانیتور', 'callback_data' => 'site:' . $siteId]],
+                [['text' => '👥 مانیتورهای مشترک من', 'callback_data' => 'shared']],
+                [['text' => '🏠 منو', 'callback_data' => 'menu']],
+            ]));
+    }
+
+    /** مانیتورهایی که دیگران با من به‌اشتراک گذاشته‌اند */
+    private function sharedSites(): array
+    {
+        try {
+            return Db::all(
+                'SELECT s.*, sh.`role` AS share_role FROM `site_share` sh
+                   JOIN `site` s ON s.id = sh.site_id
+                  WHERE sh.user_id = ? ORDER BY s.id ASC',
+                [$this->uid]
+            );
+        } catch (Throwable $e) {
+            return [];
+        }
+    }
+
+    private function sharedText(): string
+    {
+        $rows = $this->sharedSites();
+        if (!$rows) {
+            return "👥 <b>مانیتورهای مشترک</b>\n\nهنوز مانیتوری از طرف دیگران به شما سپرده نشده است.\n"
+                . "اگر لینک دعوت دارید، همان لینک را باز کنید.";
+        }
+        $sum = Stats::summaryOf($rows);
+        $txt = "👥 <b>مانیتورهای مشترک با شما</b> (" . faNum(count($rows)) . ")\n\n";
+        $i = 1;
+        foreach ($rows as $s) {
+            $state = siteState($s);
+            $icon = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][$state] ?? '⚪️';
+            $u = Stats::uptime($s, 1);
+            $owner = (string)Db::val('SELECT `name` FROM `user` WHERE `id` = ?', [(int)$s['user_id']]);
+            $txt .= faNum($i++) . ". {$icon} <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n";
+            $txt .= "    👤 " . tgH(truncateFa($owner, 24)) . " • " . ((string)$s['share_role'] === 'manager' ? '🛠 مدیر' : '👁️ ناظر')
+                . " • ۲۴س: " . faPct($u['pct']) . "\n";
+        }
+        $txt .= "\n🟢 فعال: " . faNum($sum['up']) . " • 🔴 قطع: " . faNum($sum['down'])
+            . " • میانگین ۲۴س: " . faPct($sum['uptime24']);
+        return $txt;
+    }
+
+    private function sharedMenu(): string
+    {
+        $rows = [];
+        foreach ($this->sharedSites() as $s) {
+            $icon = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][siteState($s)] ?? '⚪️';
+            $rows[] = [[
+                'text' => $icon . ' ' . mb_substr($s['label'] ?: $s['target'], 0, 30),
+                'callback_data' => 'ssite:' . (int)$s['id'],
+            ]];
+        }
+        $rows[] = [['text' => '🏠 منو', 'callback_data' => 'menu']];
+        return BotApi::ikb($rows);
+    }
+
+    /** فهرست کسانی که یک مانیتور با آن‌ها به‌اشتراک گذاشته شده */
+    private function shareListText(array $s): string
+    {
+        $rows = Db::all(
+            'SELECT sh.`role`, u.`name`, u.`username` FROM `site_share` sh
+               LEFT JOIN `user` u ON u.id = sh.user_id
+              WHERE sh.`site_id` = ? ORDER BY sh.created_at ASC',
+            [(int)$s['id']]
+        );
+        $txt = "👥 <b>اشتراک‌گذاری مانیتور</b>\n\n"
+            . "🔗 <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n\n"
+            . "اگر این لینک را برای کسی بفرستید، او می‌تواند این مانیتور را در چت خصوصی خودش دنبال کند و "
+            . "هشدارهای قطعی/برقراری را دریافت کند.\n\n"
+            . "🌐 لینک دعوت:\n<code>" . h($this->inviteUrl((string)$s['share_token'])) . "</code>\n\n";
+        if (!$rows) {
+            $txt .= "هنوز کسی این مانیتور را نپذیرفته است.";
+        } else {
+            $txt .= "پذیرش‌کنندگان (" . faNum(count($rows)) . "):\n";
+            foreach ($rows as $r) {
+                $txt .= "▫️ " . tgH(truncateFa((string)$r['name'], 30))
+                    . (!empty($r['username']) ? ' (@' . tgH((string)$r['username']) . ')' : '')
+                    . " — " . ((string)$r['role'] === 'manager' ? '🛠 مدیر' : '👁️ ناظر') . "\n";
+            }
+        }
+        $txt .= "\nℹ️ لینک عمومی صفحهٔ همین مانیتور:\n<code>" . h($this->siteUrl((string)$s['share_token'])) . "</code>";
+        return $txt;
+    }
+
+    private function inviteUrl(string $token): string
+    {
+        return 'https://t.me/' . botUsername() . '?start=site_' . rawurlencode($token);
+    }
+
+    private function siteUrl(string $token): string
+    {
+        $base = rtrim((string)($this->cfg['base_url'] ?? ''), '/');
+        if ($base === '') $base = 'https://' . trim((string)($this->cfg['domain'] ?? ''));
+        return $base . '/status.php?s=' . rawurlencode($token);
+    }
+
+    private function revokeShare(int $siteId, int $targetUser): void
+    {
+        Db::exec('DELETE FROM `site_share` WHERE `site_id` = ? AND `user_id` = ?', [$siteId, $targetUser]);
+        Db::logEvent($this->uid, 'revoke_share', $siteId . ':' . $targetUser);
+    }
+
+    // ================================================================ آستانه و کلیدواژه
+
+    private function stepMaxMs(string $text): void
+    {
+        $t = $this->temp();
+        $siteId = (int)($t['site'] ?? 0);
+        $site = $this->ownSite($siteId);
+        if (!$site) { $this->clearStep(); $this->unknown(); return; }
+        if ($text === '0' || $text === 'off' || $text === 'خاموش') {
+            Db::q('UPDATE `site` SET `max_ms` = 0, `slow` = 0, `slow_alerted` = 0 WHERE `id` = ?', [$siteId]);
+            $this->clearStep();
+            $this->send("✅ هشدار کندی برای <code>" . tgH(truncateFa((string)$site['target'], 40)) . "</code> خاموش شد.", $this->siteMenu($site));
+            return;
+        }
+        $num = preg_replace('/[^\d]/', '', faToLatin($text));
+        $v = (int)$num;
+        if ($v < 100 || $v > 120000) {
+            $this->send("⛔️ عدد بین ۱۰۰ تا ۱۲۰۰۰۰ میلی‌ثانیه بفرستید.\nیا <code>0</code> برای خاموش کردن.", BotApi::kb([[['text' => '❌ انصراف']]]));
+            return;
+        }
+        Db::q('UPDATE `site` SET `max_ms` = ? WHERE `id` = ?', [$v, $siteId]);
+        Db::logEvent($this->uid, 'set_maxms', (string)$siteId);
+        $this->clearStep();
+        $site = Db::one('SELECT * FROM `site` WHERE `id` = ?', [$siteId]);
+        $this->send("🎯 حد کندی روی <b>" . faMs($v) . "</b> تنظیم شد.\n\n"
+            . "اگر زمان پاسخ از این حد بیشتر شود، هشدار 🟠 دریافت می‌کنید.",
+            $site ? $this->siteMenu($site) : $this->mainMenu());
+    }
+
+    private function stepKeyword(string $text): void
+    {
+        $t = $this->temp();
+        $siteId = (int)($t['site'] ?? 0);
+        $site = $this->ownSite($siteId);
+        if (!$site) { $this->clearStep(); $this->unknown(); return; }
+        if ($text === '0' || $text === 'off' || $text === 'حذف' || $text === 'خاموش') {
+            Db::q('UPDATE `site` SET `keyword` = \'\' WHERE `id` = ?', [$siteId]);
+            $this->clearStep();
+            $this->send("✅ بررسی کلیدواژه خاموش شد.", $this->siteMenu($site));
+            return;
+        }
+        $kw = mb_substr(trim($text), 0, 190);
+        if ($kw === '') {
+            $this->send('⛔️ یک متن بفرستید یا <code>0</code> برای خاموش کردن.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            return;
+        }
+        if ((string)$site['type'] !== 'http') {
+            $this->clearStep();
+            $this->send('❌ کلیدواژه فقط برای مانیتورهای HTTP/HTTPS کاربرد دارد.', $this->siteMenu($site));
+            return;
+        }
+        Db::q('UPDATE `site` SET `keyword` = ? WHERE `id` = ?', [$kw, $siteId]);
+        $this->clearStep();
+        $site = Db::one('SELECT * FROM `site` WHERE `id` = ?', [$siteId]);
+        $this->send("🔎 کلیدواژه ذخیره شد: <code>" . tgH(truncateFa($kw, 40)) . "</code>\n\n"
+            . "از این پس اگر این متن در پاسخ سایت نباشد، سایت «قطع» گزارش می‌شود.",
+            $site ? $this->siteMenu($site) : $this->mainMenu());
+    }
+
+    // ================================================================ دامنه‌ها
+
+    private function domainText(): string
+    {
+        $rows = Stats::domains($this->uid, 0);
+        $max = max(1, Db::getInt('max_domains', 10));
+        if (!$rows) {
+            return "🌐 <b>پایش انقضای دامنه</b>\n\nهنوز دامنه‌ای ثبت نکرده‌اید.\n\n"
+                . "با این قابلیت، تاریخ انقضای ثبت دامنهٔ شما از طریق WHOIS پایش می‌شود و "
+                . "پیش از انقضا هشدار می‌گیرید.\n\n"
+                . "➕ با دکمهٔ زیر دامنه را اضافه کنید. (حداکثر " . faNum($max) . " دامنه)"
+                . (Domain::supported() ? '' : "\n\n⚠️ هاست شما اجازهٔ اتصال به پورت ۴۳ (WHOIS) را نمی‌دهد؛ نتیجه ممکن است نامشخص باشد.");
+        }
+        $txt = "🌐 <b>دامنه‌های شما</b> (" . faNum(count($rows)) . " از " . faNum($max) . ")\n\n";
+        foreach ($rows as $d) {
+            $exp = (string)$d['expires_at'];
+            $left = $exp !== '' ? (int)floor((strtotime($exp) - time()) / 86400) : null;
+            $icon = $left === null ? '⚪️' : ($left < 0 ? '🔴' : ($left <= (int)$d['warn_days'] ? '🟠' : '🟢'));
+            $txt .= $icon . " <code>" . tgH((string)$d['domain']) . "</code>\n";
+            $txt .= "    " . ($left === null ? 'تاریخ انقضا نامشخص' : ($left < 0 ? 'منقضی شده' : faLeft($left * 86400) . ' دیگر'))
+                . " • بررسی: " . timeAgo($d['last_check'], tzOffset()) . "\n";
+            if (!empty($d['registrar'])) $txt .= "    🏛 " . tgH(truncateFa((string)$d['registrar'], 40)) . "\n";
+            if (!empty($d['last_error'])) $txt .= "    ⚠️ " . tgH(truncateFa((string)$d['last_error'], 70)) . "\n";
+        }
+        $txt .= "\nℹ️ هر " . faNum(6) . " ساعت یک‌بار از طریق WHOIS بررسی می‌شود.";
+        return $txt;
+    }
+
+    private function stepAddDomain(string $text): void
+    {
+        $max = max(1, Db::getInt('max_domains', 10));
+        $count = count(Stats::domains($this->uid, 0));
+        if ($count >= $max) {
+            $this->clearStep();
+            $this->send("⛔️ سقف دامنه‌ها تکمیل است (" . faNum($max) . ").", $this->domainMenu());
+            return;
+        }
+        $norm = normalizeTarget($text);
+        if (!$norm['ok'] || $norm['type'] !== 'ping') {
+            $this->send("❌ یک دامنهٔ معتبر بفرستید (بدون https و بدون مسیر).\nمثال: <code>example.ir</code>", BotApi::kb([[['text' => '❌ انصراف']]]));
+            return;
+        }
+        $domain = baseDomain((string)$norm['host']);
+        if ((int)Db::val('SELECT COUNT(*) FROM `domain_watch` WHERE user_id = ? AND chat_id = 0 AND `domain` = ?', [$this->uid, $domain]) > 0) {
+            $this->send('⚠️ این دامنه از قبل ثبت شده است.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            return;
+        }
+        $info = Domain::whois($domain);
+        try {
+            Db::q(
+                'INSERT INTO `domain_watch` (`user_id`,`chat_id`,`domain`,`warn_days`,`expires_at`,`registrar`,`status`,`last_check`,`last_error`,`created_at`)
+                 VALUES (?,0,?,?,?,?,?,NOW(),?,NOW())',
+                [
+                    $this->uid, $domain, max(1, Db::getInt('domain_warn_days', 14)),
+                    $info['expires'], mb_substr((string)$info['registrar'], 0, 160),
+                    !empty($info['ok']) ? 'ok' : 'unknown',
+                    mb_substr((string)$info['error'], 0, 190),
+                ]
+            );
+        } catch (Throwable $e) {
+            $this->send('❌ ثبت دامنه ناموفق بود.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            return;
+        }
+        Db::logEvent($this->uid, 'add_domain', $domain);
+        $this->clearStep();
+        $txt = "✅ <b>دامنه ثبت شد</b>\n🌐 <code>" . h($domain) . "</code>\n\n";
+        if (!empty($info['ok'])) {
+            $left = (int)floor((strtotime((string)$info['expires']) - time()) / 86400);
+            $txt .= "🗓 انقضا: " . faDay($info['expires']) . ' — ' . ($left < 0 ? 'منقضی شده' : faLeft($left * 86400) . ' دیگر') . "\n";
+            if (!empty($info['registrar'])) $txt .= "🏛 ثبت‌کننده: " . tgH(truncateFa((string)$info['registrar'], 40)) . "\n";
+            $txt .= "\n🔔 اگر کمتر از " . faNum(max(1, Db::getInt('domain_warn_days', 14))) . " روز باقی بماند، هشدار می‌گیرید.";
+        } else {
+            $txt .= "⚠️ استعلام WHOIS انجام نشد: " . tgH((string)$info['error']) . "\nدامنه ذخیره شد و بعداً دوباره بررسی می‌شود.";
+        }
+        $this->send($txt, $this->domainMenu());
+    }
+
+    // ================================================================ رخدادها
+
+    private function siteIncidentsText(array $s): string
+    {
+        $rows = Stats::incidents((int)$s['id'], 12);
+        $head = "📜 <b>تاریخچهٔ رخدادها</b>\n🔗 <code>" . tgH(truncateFa((string)($s['label'] ?: $s['target']), 50)) . "</code>\n\n";
+        if (!$rows) return $head . "تا این لحظه هیچ قطعی یا کندی‌ای ثبت نشده است. 🎉\n\n"
+            . "این فهرست فقط از زمانی که ربات فعال بوده نگهداری می‌شود.";
+
+        $down = 0; $slow = 0; $tot = 0; $ongoing = 0;
+        foreach ($rows as $i) {
+            if ((string)$i['kind'] === 'down') $down++; else $slow++;
+            if (empty($i['end_at'])) $ongoing++; else $tot += (int)$i['duration'];
+        }
+        $head .= "🔴 قطعی: " . faNum($down) . " بار • 🟠 کندی: " . faNum($slow) . " بار\n"
+            . "⏱ مجموع قطعی: " . faDuration($tot) . "\n\n";
+        foreach ($rows as $i) {
+            $open = empty($i['end_at']);
+            $dur = $open ? max(0, time() - (int)strtotime((string)$i['start_at'])) : (int)$i['duration'];
+            $head .= ((string)$i['kind'] === 'down' ? '🔴' : '🟠') . " <b>" . ((string)$i['kind'] === 'down' ? 'قطعی' : 'کندی') . "</b> — "
+                . faDuration($dur) . ($open ? ' <i>(ادامه دارد)</i>' : '') . "\n";
+            $head .= "    🕒 " . faDateTime((string)$i['start_at']) . " • " . timeAgo($i['start_at'], tzOffset()) . "\n";
+            if (!empty($i['reason'])) $head .= "    ❌ " . tgH(truncateFa((string)$i['reason'], 70)) . "\n";
+            if ((int)$i['peak_ms'] > 0) $head .= "    ⚡️ اوج پاسخ: " . faMs((int)$i['peak_ms']) . "\n";
+        }
+        return $head;
+    }
+
+    private function userIncidentsText(): string
+    {
+        $rows = Stats::userIncidents($this->uid, 0, 12);
+        $t = Stats::incidentTotals($this->uid, 0);
+        $head = "📜 <b>رخدادهای اخیر شما</b>\n\n"
+            . "🔴 مدت مجموع قطعی: " . faDuration((int)$t['down']) . " • 🟠 مدت مجموع کندی: " . faDuration((int)$t['slow']) . "\n"
+            . "🧾 تعداد رخداد: " . faNum($t['count']) . "\n\n";
+        if (!$rows) return $head . 'رخدادی ثبت نشده است. 🎉';
+        foreach ($rows as $i) {
+            $open = empty($i['end_at']);
+            $dur = $open ? max(0, time() - (int)strtotime((string)$i['start_at'])) : (int)$i['duration'];
+            $head .= (string)$i['kind'] === 'down' ? '🔴' : '🟠';
+            $head .= " <code>" . tgH(truncateFa((string)($i['label'] ?: $i['target']), 34)) . "</code> — "
+                . faDuration($dur) . ($open ? ' (ادامه دارد)' : '') . "\n";
+            $head .= "    🕒 " . faDateTime((string)$i['start_at']) . " • " . timeAgo($i['start_at'], tzOffset());
+            if (!empty($i['reason'])) $head .= "\n    ❌ " . tgH(truncateFa((string)$i['reason'], 60));
+            $head .= "\n";
+        }
+        return $head;
+    }
+
     // --------------------------- کد فعال‌سازی
 
-    private function stepRedeemCode(string $text): void
-    {
+    private function stepRedeemCode(string $text): void    {
         if ($text === '❌ انصراف') { $this->clearStep(); $this->send('انصراف شد.', $this->mainMenu()); return; }
         $code = strtoupper(trim($text));
         $code = preg_replace('/[^A-Z0-9\-]/', '', $code) ?? $code;
@@ -530,10 +952,13 @@ class Bot
             'fail_threshold' => [1, 20, 'آستانهٔ هشدار قطعی (چک ناموفق پیاپی)'],
             'price' => [0, 1000000000, 'قیمت اشتراک به تومان'],
             'vip_days' => [1, 3650, 'مدت اشتراک ویژه به روز'],
+            'group_max_sites' => [1, 500, 'سقف مانیتور هر گروه/کانال'],
+            'ssl_warn_days' => [1, 180, 'آستانهٔ هشدار انقضای گواهی (روز)'],
+            'domain_warn_days' => [1, 365, 'آستانهٔ هشدار انقضای دامنه (روز)'],
+            'max_domains' => [0, 100, 'سقف دامنه برای هر کاربر (۰ = نامحدود)'],
         ];
         if (!isset($rules[$key])) { $this->clearStep(); $this->unknown(); return; }
-        $num = preg_replace('/[۰-۹]/', fn($m) => (string)(strpos('۰۱۲۳۴۵۶۷۸۹', $m[0]) % 10), trim($text));
-        $num = preg_replace('/[^\d]/', '', (string)$num);
+        $num = preg_replace('/[^\d]/', '', faToLatin(trim($text)));
         if ($num === '') { $this->send('⛔️ لطفاً یک عدد وارد کنید:', BotApi::kb([[['text' => '❌ انصراف']]])); return; }
         [$min, $max, $label] = $rules[$key];
         $v = (int)$num;
@@ -746,13 +1171,190 @@ class Bot
             case 'sdelx': {
                 $site = $this->ownSite((int)$arg);
                 if (!$site) return;
-                Db::q('DELETE FROM `check_log` WHERE `site_id` = ?', [$site['id']]);
-                Db::q('DELETE FROM `uptime_hour` WHERE `site_id` = ?', [$site['id']]);
-                Db::q('DELETE FROM `site` WHERE `id` = ? AND `user_id` = ?', [$site['id'], $this->uid]);
-                Db::logEvent($this->uid, 'delete_site', $site['target']);
+                GroupBot::purgeSite((int)$site['id']);
+                Db::logEvent($this->uid, 'delete_site', (string)$site['target']);
                 $this->edit($msgId, "🗑 سایت حذف شد.\n\n" . $this->sitesListText(), $this->sitesListMenu());
                 return;
             }
+
+            // ---------- اشتراک‌گذاری، آستانه، کلیدواژه، رخداد ----------
+            case 'sshare': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) { $this->edit($msgId, '❌ سایت پیدا نشد.', $this->sitesListMenu()); return; }
+                $this->edit($msgId, $this->shareListText($site), BotApi::ikb([
+                    [['text' => '📋 فهرست سایت‌های من', 'callback_data' => 'sites']],
+                    [['text' => '🔙', 'callback_data' => 'site:' . $site['id']]],
+                ]));
+                return;
+            }
+            case 'sincer': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) { $this->edit($msgId, '❌ سایت پیدا نشد.', $this->sitesListMenu()); return; }
+                $rows = Stats::incidents((int)$site['id'], 12);
+                $this->edit($msgId, $this->siteIncidentsText($site), BotApi::ikb([
+                    [['text' => '📋 فهرست سایت‌های من', 'callback_data' => 'sites']],
+                    [['text' => '🔙', 'callback_data' => 'site:' . $site['id']]],
+                ]));
+                return;
+            }
+            case 'sms': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) return;
+                $this->setStep('await_maxms', ['site' => (int)$site['id']]);
+                $this->edit($msgId, "🎯 <b>حد کندی پاسخ</b>\n\n"
+                    . "اگر زمان پاسخ سایت از این حد بیشتر شود، هشدار 🟠 می‌گیرید.\n\n"
+                    . "عدد را بر حسب <b>میلی‌ثانیه</b> بفرستید.\n"
+                    . "مثال: <code>2000</code> یعنی ۲ ثانیه\n"
+                    . "برای خاموش کردن: <code>0</code>\n\n"
+                    . "فعلی: " . ((int)$site['max_ms'] > 0 ? faMs((int)$site['max_ms']) : 'خاموش'),
+                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                return;
+            }
+            case 'skw': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) return;
+                $this->setStep('await_keyword', ['site' => (int)$site['id']]);
+                $this->edit($msgId, "🔎 <b>بررسی کلیدواژه</b>\n\n"
+                    . "متنی که باید در پاسخ سایت باشد را بفرستید.\n"
+                    . "اگر پیدا نشود، سایت «قطع» گزارش می‌شود.\n\n"
+                    . "مثال: <code>سلام به همه</code>\n"
+                    . "برای خاموش کردن: <code>0</code>\n\n"
+                    . "فعلی: " . (trim((string)$site['keyword']) !== '' ? tgH(truncateFa((string)$site['keyword'], 40)) : 'خاموش')
+                    . "\n⚠️ فقط برای مانیتورهای HTTP/HTTPS کاربرد دارد.",
+                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                return;
+            }
+            case 'slink': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) return;
+                $url = $this->siteUrl((string)$site['share_token']);
+                $this->edit($msgId, "🌐 <b>لینک عمومی این مانیتور</b>\n\n"
+                    . "فقط همین یک سایت را نشان می‌دهد (نه همهٔ سایت‌های شما).\n"
+                    . "می‌توانید در سایت، امضای ایمیل یا هر جای عمومی بگذارید.\n\n"
+                    . "<code>" . h($url) . "</code>",
+                    BotApi::ikb([
+                        [['text' => '📤 اشتراک‌گذاری', 'url' => 'https://t.me/share/url?url=' . rawurlencode($url) . '&text=' . rawurlencode('📊 وضعیت زنده:')]],
+                        [['text' => '🔙', 'callback_data' => 'site:' . $site['id']]],
+                    ]));
+                return;
+            }
+            case 'ssl': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) return;
+                $this->edit($msgId, $this->sslText($site), BotApi::ikb([
+                    [['text' => '🔄 بررسی الآن گواهی', 'callback_data' => 'sslx:' . $site['id']]],
+                    [['text' => '🔙', 'callback_data' => 'site:' . $site['id']]],
+                ]));
+                return;
+            }
+            case 'sslx': {
+                $site = $this->ownSite((int)$arg);
+                if (!$site) return;
+                $this->edit($msgId, '🔄 در حال خواندن گواهی…');
+                $info = Ssl::check((string)$site['host'], (int)($site['port'] ?: 443));
+                $warn = max(1, (int)($site['ssl_warn_days'] ?: Db::getInt('ssl_warn_days', 14)));
+                try {
+                    Db::q('UPDATE `site` SET ssl_check_at = NOW(), ssl_days = ?, ssl_expires_at = ?, ssl_issuer = ?, ssl_error = ? WHERE id = ?',
+                        [(int)$info['days'], $info['expires'], mb_substr((string)$info['issuer'], 0, 160), mb_substr((string)$info['error'], 0, 190), (int)$site['id']]);
+                } catch (Throwable $e) {
+                    // بی‌اهمیت
+                }
+                $fresh = Db::one('SELECT * FROM `site` WHERE `id` = ?', [(int)$site['id']]);
+                $this->edit($msgId, $fresh ? $this->sslText($fresh) : '❌ خطا', BotApi::ikb([[['text' => '🔙', 'callback_data' => 'site:' . $site['id']]]]));
+                return;
+            }
+            case 'sacc': { // پذیرش دعوت: site_id:role
+                $this->acceptInvite((int)$arg, (string)($parts[2] ?? 'viewer'));
+                return;
+            }
+
+            // ---------- مانیتورهای مشترک ----------
+            case 'shared':
+                $this->edit($msgId, $this->sharedText(), $this->sharedMenu());
+                return;
+            case 'uincer':
+                $this->edit($msgId, $this->userIncidentsText(), $this->mainMenu());
+                return;
+            case 'ssite': {
+                $site = Db::one(
+                    'SELECT s.*, sh.`role` AS share_role FROM `site_share` sh JOIN `site` s ON s.id = sh.site_id
+                      WHERE s.id = ? AND sh.user_id = ?',
+                    [(int)$arg, $this->uid]
+                );
+                if (!$site) { $this->edit($msgId, '❌ این مانیتور دیگر در فهرست شما نیست.', $this->sharedMenu()); return; }
+                $owner = (string)Db::val('SELECT `name` FROM `user` WHERE `id` = ?', [(int)$site['user_id']]);
+                $head = "👥 <b>مانیتور مشترک</b>\n"
+                    . "👤 مالک: " . tgH(truncateFa($owner, 30)) . "\n"
+                    . "🛡 نقش شما: " . ((string)$site['share_role'] === 'manager' ? '🛠 ناظر + مدیر' : '👁️ ناظر') . "\n"
+                    . "🚫 برای خروج: «🚫 خروج از این مانیتور»\n\n";
+                if ((string)$site['share_role'] === 'manager') {
+                    $this->edit($msgId, $head . $this->siteDetail($site), BotApi::ikb([
+                        [['text' => '🔁 چک الآن', 'callback_data' => 'smc:' . $site['id']],
+                         ['text' => (int)$site['paused'] === 1 ? '▶️ ادامه' : '⏸ توقف', 'callback_data' => ((int)$site['paused'] === 1 ? 'smr:' : 'smp:') . $site['id']]],
+                        [['text' => '🚫 خروج از این مانیتور', 'callback_data' => 'sleave:' . $site['id']]],
+                        [['text' => '🔙 مانیتورهای مشترک', 'callback_data' => 'shared']],
+                    ]));
+                } else {
+                    $this->edit($msgId, $head . $this->siteDetail($site), BotApi::ikb([
+                        [['text' => '🚫 خروج از این مانیتور', 'callback_data' => 'sleave:' . $site['id']]],
+                        [['text' => '🔙 مانیتورهای مشترک', 'callback_data' => 'shared']],
+                    ]));
+                }
+                return;
+            }
+            case 'smc': {
+                $site = $this->sharedSite((int)$arg);
+                if (!$site) return;
+                Monitor::checkSite((int)$site['id']);
+                $this->edit($msgId, '🔁 بررسی فوری انجام شد.\n\n' . $this->siteDetail($site), BotApi::ikb([[['text' => '🔙', 'callback_data' => 'ssite:' . $site['id']]]]));
+                return;
+            }
+            case 'smp':
+            case 'smr': {
+                $site = $this->sharedSite((int)$arg);
+                if (!$site || (string)$site['share_role'] !== 'manager') return;
+                $pause = $act === 'smp';
+                if ($pause) {
+                    Db::q('UPDATE `site` SET `paused` = 1, `paused_since` = NOW() WHERE `id` = ?', [$site['id']]);
+                    Db::logEvent($this->uid, 'pause_site', (string)$site['target']);
+                    $note = '⏸ متوقف شد.';
+                } else {
+                    $since = $site['paused_since'] ? (int)strtotime((string)$site['paused_since']) : time();
+                    $dur = max(0, time() - $since);
+                    Db::q('UPDATE `site` SET `paused` = 0, `paused_since` = NULL, `paused_total` = `paused_total` + ? WHERE `id` = ?', [$dur, $site['id']]);
+                    Db::logEvent($this->uid, 'resume_site', (string)$site['target']);
+                    $note = '▶️ ادامه یافت (توقف قبلی: ' . faDuration($dur) . ').';
+                }
+                $fresh = Db::one('SELECT * FROM `site` WHERE `id` = ?', [(int)$site['id']]);
+                $this->edit($msgId, $note . "\n\n" . $this->siteDetail($fresh), BotApi::ikb([[['text' => '🔙', 'callback_data' => 'ssite:' . $site['id']]]]));
+                return;
+            }
+            case 'sleave': {
+                $site = $this->sharedSite((int)$arg);
+                if (!$site) return;
+                $this->revokeShare((int)$site['id'], $this->uid);
+                $this->edit($msgId, "🚫 از این مانیتور خارج شدید.\n\n" . $this->sharedText(), $this->sharedMenu());
+                return;
+            }
+
+            // ---------- دامنه‌ها ----------
+            case 'domains':
+                $this->edit($msgId, $this->domainText(), $this->domainMenu());
+                return;
+            case 'dadd':
+                $this->setStep('await_domain');
+                $this->edit($msgId, "🌐 <b>افزودن دامنه</b>\n\n"
+                    . "نام دامنه را بفرستید (بدون https و بدون مسیر):\n<code>example.ir</code>\n\n"
+                    . "تاریخ انقضای ثبت آن از طریق WHOIS پایش می‌شود و پیش از انقضا هشدار می‌گیرید.\n\n"
+                    . "انصراف: ❌ انصراف", BotApi::kb([[['text' => '❌ انصراف']]]));
+                return;
+            case 'ddel': {
+                Db::exec('DELETE FROM `domain_watch` WHERE `id` = ? AND `user_id` = ? AND `chat_id` = 0', [(int)$arg, $this->uid]);
+                Db::logEvent($this->uid, 'del_domain', (string)$arg);
+                $this->edit($msgId, '🗑 دامنه حذف شد.\n\n' . $this->domainText(), $this->domainMenu());
+                return;
+            }
+
 
             // ---------- ادمین: آمار/کرون/همگانی ----------
             case 'astats':
@@ -805,6 +1407,12 @@ class Bot
                     $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
                     return;
                 }
+                if ($arg === 'notify_slow') {
+                    $cur = Db::getBool('notify_slow', true);
+                    Db::set('notify_slow', $cur ? '0' : '1');
+                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    return;
+                }
                 if ($arg === 'access_mode') {
                     $order = ['open', 'code', 'paid'];
                     $cur = Db::get('access_mode', 'open');
@@ -812,6 +1420,16 @@ class Bot
                     Db::set('access_mode', $next);
                     if ($next === 'open') Db::q('UPDATE `user` SET `access` = 1 WHERE `is_admin` = 0');
                     Db::logEvent($this->uid, 'setting', 'access_mode=' . $next);
+                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    return;
+                }
+                if ($arg === 'group_mention') {
+                    $order = ['none', 'admins', 'all'];
+                    $cur = Db::get('group_mention', 'admins');
+                    $next = $order[(array_search($cur, $order, true) + 1) % 3];
+                    Db::set('group_mention', $next);
+                    Db::exec('UPDATE `chat_hub` SET `mention` = ?', [$next]);
+                    Db::logEvent($this->uid, 'setting', 'group_mention=' . $next);
                     $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
                     return;
                 }
@@ -824,6 +1442,10 @@ class Bot
                     'price' => 'قیمت اشتراک (تومان)',
                     'card' => 'شماره کارت (حداکثر ۱۹ رقم)',
                     'vip_days' => 'مدت اشتراک ویژه (روز)',
+                    'group_max_sites' => 'سقف مانیتور هر گروه/کانال',
+                    'ssl_warn_days' => 'آستانهٔ هشدار انقضای گواهی (روز)',
+                    'domain_warn_days' => 'آستانهٔ هشدار انقضای دامنه (روز)',
+                    'max_domains' => 'سقف دامنه برای هر کاربر',
                 ];
                 if (!isset($labels[$arg])) return;
                 $this->setStep('await_setting', ['key' => $arg]);
@@ -935,7 +1557,50 @@ class Bot
     private function ownSite(int $id): ?array
     {
         if ($id <= 0) return null;
-        return Db::one('SELECT * FROM `site` WHERE `id` = ? AND `user_id` = ?', [$id, $this->uid]);
+        return Db::one('SELECT * FROM `site` WHERE `id` = ? AND `user_id` = ? AND `chat_id` = 0', [$id, $this->uid]);
+    }
+
+    /** مانیتوری که مالکش دیگری است ولی با من به‌اشتراک گذاشته شده */
+    private function sharedSite(int $id): ?array
+    {
+        if ($id <= 0) return null;
+        return Db::one(
+            'SELECT s.*, sh.`role` AS share_role FROM `site_share` sh JOIN `site` s ON s.id = sh.site_id
+              WHERE s.id = ? AND sh.user_id = ?',
+            [$id, $this->uid]
+        );
+    }
+
+    /** متن گواهی SSL یک مانیتور */
+    private function sslText(array $s): string
+    {
+        $tz = tzOffset();
+        $host = (string)$s['host'];
+        if ((string)$s['type'] !== 'http' || stripos((string)$s['target'], 'https://') !== 0) {
+            return "🔐 <b>گواهی SSL</b>\n\n"
+                . "این مانیتور روی HTTP است و گواهی SSL ندارد.\n"
+                . "برای بررسی گواهی، آدرس را با <code>https://</code> ثبت کنید.";
+        }
+        if (!Ssl::supported()) {
+            return "🔐 <b>گواهی SSL</b>\n\n⚠️ افزونهٔ openssl یا پشتیبانی TLS روی هاست فعال نیست؛ بررسی گواهی ممکن نیست.";
+        }
+        $days = (int)$s['ssl_days'];
+        $checked = (string)$s['ssl_check_at'];
+        $warn = max(1, (int)($s['ssl_warn_days'] ?: Db::getInt('ssl_warn_days', 14)));
+
+        $txt = "🔐 <b>گواهی SSL</b>\n"
+            . "🔗 <code>" . tgH(truncateFa((string)$s['target'], 50)) . "</code>\n"
+            . "🏛 صادرکننده: " . tgH(truncateFa((string)$s['ssl_issuer'], 40)) . "\n"
+            . "🗓 انقضا: " . faDay($s['ssl_expires_at'], $tz) . "\n"
+            . "⏳ " . ($days < 0 ? 'نامشخص' : faLeft($days * 86400) . ' دیگر') . "\n"
+            . "🎯 آستانهٔ هشدار: " . faNum($warn) . " روز\n"
+            . "🕒 آخرین بررسی: " . ($checked !== '' ? timeAgo($checked, $tz) : '—') . "\n";
+
+        $icon = $days <= 0 ? '🔴' : ($days <= $warn ? '🟠' : '🟢');
+        $txt .= "\n" . $icon . ' ' . ($days <= 0 ? 'گواهی منقضی شده یا نامعتبر است.' : ($days <= $warn ? 'به‌زودی منقضی می‌شود — تمدید کنید.' : 'گواهی سالم است.')) . "\n";
+        if (!empty($s['ssl_error'])) $txt .= "❌ " . tgH(truncateFa((string)$s['ssl_error'], 80)) . "\n";
+        $txt .= "\nℹ️ گواهی هر " . faNum(max(10, (int)Db::get('ssl_interval', '3600') / 60)) . " دقیقه بررسی و در صورت نزدیک شدن به انقضا هشدار داده می‌شود.";
+        return $txt;
     }
 
     // ================================================================ متون
@@ -965,13 +1630,20 @@ class Bot
             . "▪️ <code>example.com</code> → پینگ (ICMP)\n"
             . "▪️ <code>example.com:8080</code> → اتصال پورت (TCP)\n\n"
             . "<b>۲) نمایش وضعیت</b>\n"
-            . "«📋 سایت‌های من» → انتخاب سایت → جزئیات کامل: آپتایم ۲۴ ساعت/۷ روز/۳۰ روز، زمان پاسخ، تاریخچهٔ رنگی چک‌ها.\n\n"
-            . "<b>۳) توقف موقت</b>\n"
+            . "«📋 سایت‌های من» → انتخاب سایت → جزئیات کامل: آپتایم ۲۴ ساعت/۷ روز/۳۰ روز، زمان پاسخ، کمینه/میانگین/بیشینه، گواهی SSL، تاریخچهٔ رنگی چک‌ها و رخدادها.\n\n"
+            . "<b>۳) هشدار کندی</b>\n"
+            . "در منوی هر سایت، «🎯 حد کندی» را بزنید تا اگر پاسخ سایت کندتر از حد شما شد، هشدار 🟠 بگیرید.\n"
+            . "با «🔎 کلیدواژه» می‌توانید بخواهید یک متن خاص حتماً در پاسخ سایت باشد.\n\n"
+            . "<b>۴) اشتراک‌گذاری</b>\n"
+            . "«🔗 صفحهٔ وضعیت من» لینک عمومی همهٔ سایت‌هاست.\n"
+            . "در منوی هر سایت «🌐 لینک تک‌سایت» صفحهٔ تک‌مانیتوری می‌دهد و «👥 اشتراک‌گذاری» لینک دعوت می‌سازد تا هر کسی آن را بپذیرد، هشدارهای همان سایت را در چت خودش بگیرد.\n"
+            . "مانیتورهایی که دیگران به شما سپرده‌اند در «👥 مانیتورهای مشترک» است.\n\n"
+            . "<b>۵) توقف موقت</b>\n"
             . "می‌توانید چک یک سایت یا همهٔ سایت‌های خود را موقتاً متوقف و دوباره ادامه دهید. مدت توقف در آمار لحاظ می‌شود.\n\n"
-            . "<b>۴) صفحهٔ وضعیت اشتراکی</b>\n"
-            . "«🔗 صفحهٔ وضعیت من» → لینکی عمومی برای نمایش زندهٔ سایت‌هایتان (قابل اشتراک در وب/شبکه‌های اجتماعی).\n\n"
-            . "<b>۵) اطلاع‌رسانی</b>\n"
-            . "با قطع شدن سرویس پیام 🔴 و با برقراری دوباره پیام 🟢 دریافت می‌کنید.\n\n"
+            . "<b>۶) دامنه و گواهی</b>\n"
+            . "«🌐 دامنه‌های من» تاریخ انقضای ثبت دامنه را پایش می‌کند؛ گواهی SSL سایت‌های HTTPS هم خودکار بررسی و هشدار داده می‌شود.\n\n"
+            . "<b>۷) گروه و کانال</b>\n"
+            . "ربات را به گروه اضافه کنید و با <code>/add https://example.com</code> مانیتور بسازید. اعلان قطعی/برقراری داخل گروه ارسال می‌شود. سقف مانیتورهای گروه جداست.\n\n"
             . "⚙️ از «⚙️ تنظیمات» می‌توانید اعلان‌ها را خاموش/روشن کنید.";
     }
 
@@ -984,20 +1656,29 @@ class Bot
         $txt = "📋 <b>سایت‌های شما</b> (" . faNum($summary['total']) . " از " . faNum($this->maxSites()) . ")\n\n";
         $i = 1;
         foreach ($summary['sites'] as $s) {
-            $paused = (int)$s['paused'] === 1;
-            $st = $paused ? '🟡' : statusEmoji($s['status']);
+            $state = siteState($s);
+            $icon = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][$state] ?? '⚪️';
             $u = Stats::uptime($s, 1);
-            $txt .= faNum($i++) . ". {$st} <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n";
+            $txt .= faNum($i++) . ". {$icon} <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n";
             $txt .= "    " . typeName($s['type']) . " • آپتایم ۲۴س: " . ($u['pct'] !== null ? faPct($u['pct']) : '—');
-            if ($paused) $txt .= " • ⏸ متوقف";
-            elseif ($s['status'] === 'down') $txt .= " • 🔴 از " . timeAgo($s['last_down_at'], tzOffset());
+            if ($state === 'paused') $txt .= " • ⏸ متوقف";
+            elseif ($state === 'slow') $txt .= " • 🟠 کند (" . faMs((int)$s['last_ms']) . ")";
+            elseif ($state === 'down') $txt .= " • 🔴 از " . timeAgo($s['last_down_at'], tzOffset());
             $txt .= "\n";
-            if (!$paused && $s['last_check_at']) $txt .= "    ⏱ آخرین چک: " . timeAgo($s['last_check_at'], tzOffset()) . " — " . faMs((int)$s['last_ms']) . "\n";
+            if ($state !== 'paused' && $s['last_check_at']) $txt .= "    ⏱ آخرین چک: " . timeAgo($s['last_check_at'], tzOffset()) . " — " . faMs((int)$s['last_ms']) . "\n";
+            $extra = [];
+            if ((int)$s['max_ms'] > 0) $extra[] = '🎯 ' . faMs((int)$s['max_ms']);
+            if (trim((string)$s['keyword']) !== '') $extra[] = '🔎';
+            if ((int)$s['ssl_days'] >= 0 && (int)$s['ssl_days'] <= (int)$s['ssl_warn_days']) $extra[] = '🔐 ' . faLeft((int)$s['ssl_days'] * 86400);
+            $open = (int)Db::val('SELECT COUNT(*) FROM `incident` WHERE `site_id` = ? AND `end_at` IS NULL', [(int)$s['id']]);
+            if ($open > 0) $extra[] = '📜 ' . faNum($open) . ' رخداد باز';
+            if ($extra) $txt .= "    " . implode(' • ', $extra) . "\n";
             $txt .= "\n";
         }
         $engine = Stats::engine();
         $txt .= "🔁 موتور چک: " . ($engine['paused'] ? '⏸ متوقف' : ($engine['cron_healthy'] ? '🟢 فعال' : '🟡 بدون کرون'))
             . " • فاصله: " . faNum($engine['interval']) . " ثانیه";
+        if ($summary['slow'] > 0) $txt .= "\n🟠 " . faNum($summary['slow']) . " سایت کند است (بیش از حد تعیین‌شده)";
         return $txt;
     }
 
@@ -1008,30 +1689,71 @@ class Bot
         $u30 = Stats::uptime($s, 30);
         $c = Stats::counters($s);
         $recent = Stats::recent($s, 60);
-        $paused = (int)$s['paused'] === 1;
+        $state = siteState($s);
+        $paused = $state === 'paused';
+        $icon = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][$state] ?? '⚪️';
+        $label = statusLabel($state);
+        $tz = tzOffset();
 
         $txt = "📊 <b>جزئیات سایت</b>\n\n"
             . "🔗 <code>" . tgH($s['target']) . "</code>\n"
             . "🧭 نوع: " . typeName($s['type']) . "\n"
-            . "🚦 وضعیت: " . ($paused ? "🟡 <b>متوقف موقت</b>" : statusEmoji($s['status']) . " <b>" . statusName($s['status']) . "</b>") . "\n\n"
+            . "🚦 وضعیت: {$icon} <b>{$label}</b>\n\n"
             . "<b>⏱ آپتایم</b>\n"
             . "▫️ ۲۴ ساعت اخیر: " . faPct($u24['pct']) . " (" . faNum($u24['checks']) . " چک)\n"
             . "▫️ ۷ روز: " . faPct($u7['pct']) . "\n"
             . "▫️ ۳۰ روز: " . faPct($u30['pct']) . "\n\n"
             . "<b>📈 عملکرد</b>\n"
             . "▫️ زمان پاسخ آخرین چک: " . faMs((int)$s['last_ms']) . "\n"
-            . "▫️ میانگین ۲۴ ساعت: " . faMs($u24['avg_ms']) . "\n"
-            . "▫️ کل چک‌ها: " . faNum($c['checks']) . " • قطعی‌ها: " . faNum($c['fails'])
-            . " (" . faPct($c['checks'] > 0 ? round($c['fails'] * 10000 / $c['checks']) / 100 : null) . ")\n"
-            . "▫️ آخرین چک: " . timeAgo($s['last_check_at'], tzOffset()) . "\n"
-            . "▫️ آخرین برقراری: " . timeAgo($s['last_up_at'], tzOffset()) . "\n"
-            . "▫️ آخرین قطعی: " . ($s['last_down_at'] ? timeAgo($s['last_down_at'], tzOffset()) . ((int)$s['last_down_duration'] > 0 ? " (مدت " . faDuration((int)$s['last_down_duration']) . ")" : '') : '—') . "\n"
-            . "▫️ ثبت‌شده از: " . timeAgo($s['created_at'], tzOffset()) . "\n";
-
-        if (!empty($s['last_error']) && $s['status'] !== 'up') {
-            $txt .= "\n❌ دلیل آخرین خطا: <i>" . tgH($s['last_error']) . "</i>\n";
+            . "▫️ میانگین ۲۴ ساعت: " . faMs($u24['avg_ms']) . "\n";
+        if ((int)$s['resp_avg'] > 0) {
+            $txt .= "▫️ کمینه/میانگین/بیشینه (۲۴س): " . faMs((int)Db::val('SELECT MIN(`ms`) FROM `check_log` WHERE `site_id` = ? AND ok = 1 AND ms > 0 AND ts >= DATE_SUB(NOW(), INTERVAL 1 DAY)', [(int)$s['id']]) ?: 0)
+                . " / " . faMs((int)$s['resp_avg']) . " / " . faMs((int)$s['resp_max']) . "\n"
+                . "▫️ صدک ۹۵: " . faMs((int)$s['resp_p95']) . "\n";
         }
-        $txt .= "\n<b>آخرین " . faNum(count($recent)) . " چک (هر مربع یک چک):</b>\n" . Stats::barEmoji($recent);
+        $txt .= "▫️ کل چک‌ها: " . faNum($c['checks']) . " • ناموفق: " . faNum($c['fails'])
+            . " (" . faPct($c['checks'] > 0 ? round($c['fails'] * 10000 / $c['checks']) / 100 : null) . ")\n"
+            . "▫️ آخرین چک: " . timeAgo($s['last_check_at'], $tz) . "\n"
+            . "▫️ آخرین برقراری: " . timeAgo($s['last_up_at'], $tz) . "\n"
+            . "▫️ آخرین قطعی: " . ($s['last_down_at'] ? timeAgo($s['last_down_at'], $tz) . ((int)$s['last_down_duration'] > 0 ? " (مدت " . faDuration((int)$s['last_down_duration']) . ")" : '') : '—') . "\n"
+            . "▫️ ثبت‌شده از: " . timeAgo($s['created_at'], $tz) . "\n";
+
+        if ((int)$s['max_ms'] > 0) {
+            $txt .= "\n<b>🎯 آستانه‌ها</b>\n"
+                . "▫️ حد کندی: " . faMs((int)$s['max_ms'])
+                . ((int)$s['slow'] === 1 ? " • <b>🟠 اکنون کند است</b>" : " • 🟢 اکنون سریع است") . "\n";
+        }
+        if (trim((string)$s['keyword']) !== '') {
+            $txt .= "▫️ کلیدواژه: <code>" . tgH(truncateFa((string)$s['keyword'], 50)) . "</code>\n";
+        }
+        if (stripos((string)$s['target'], 'https://') === 0) {
+            $days = (int)$s['ssl_days'];
+            if ((string)$s['ssl_check_at'] !== '') {
+                $si = $days <= 0 ? '🔴' : ($days <= (int)$s['ssl_warn_days'] ? '🟠' : '🟢');
+                $txt .= "▫️ گواهی SSL: {$si} " . ($days < 0 ? 'نامشخص' : faLeft($days * 86400) . ' دیگر')
+                    . (!empty($s['ssl_issuer']) ? " — " . tgH(truncateFa((string)$s['ssl_issuer'], 30)) : '') . "\n";
+            } else {
+                $txt .= "▫️ گواهی SSL: هنوز بررسی نشده (دکمهٔ 🔐 در منو)\n";
+            }
+        }
+        $shared = (int)Db::val('SELECT COUNT(*) FROM `site_share` WHERE `site_id` = ?', [(int)$s['id']]);
+        if ($shared > 0) $txt .= "\n👥 این مانیتور با " . faNum($shared) . " نفر به‌اشتراک گذاشته شده است.";
+
+        if (!empty($s['last_error']) && $state === 'down') {
+            $txt .= "\n\n❌ دلیل آخرین خطا: <i>" . tgH($s['last_error']) . "</i>";
+        }
+        $inc = Stats::incidents((int)$s['id'], 3);
+        if ($inc) {
+            $txt .= "\n\n<b>📜 آخرین رخدادها</b>";
+            foreach ($inc as $i) {
+                $open = empty($i['end_at']);
+                $dur = $open ? max(0, time() - (int)strtotime((string)$i['start_at'])) : (int)$i['duration'];
+                $txt .= "\n" . ((string)$i['kind'] === 'down' ? '🔴' : '🟠') . " "
+                    . ((string)$i['kind'] === 'down' ? 'قطعی' : 'کندی') . " — " . faDuration($dur)
+                    . ($open ? ' (ادامه دارد)' : '') . ' • ' . timeAgo($i['start_at'], $tz);
+            }
+        }
+        $txt .= "\n\n<b>آخرین " . faNum(count($recent)) . " چک (هر مربع یک چک):</b>\n" . Stats::barEmoji($recent);
         return $txt;
     }
 
@@ -1054,6 +1776,14 @@ class Bot
         $txt .= "\n▫️ توقف‌های شما: " . faNum((int)Db::val("SELECT COUNT(*) FROM `events` WHERE `user_id` = ? AND `kind` = 'pause_user'", [$this->uid]))
             . " بار — مجموع " . faDuration((int)$u['paused_total'] + ((int)$u['paused'] === 1 && $u['paused_since'] ? max(0, time() - strtotime($u['paused_since'])) : 0)) . "\n"
             . "▫️ اعلان‌ها: " . ((int)$u['notify'] ? '🔔 روشن' : '🔕 خاموش');
+        $t = Stats::incidentTotals($this->uid, 0);
+        if ($t['count'] > 0) {
+            $txt .= "\n\n<b>📜 رخدادها</b>\n"
+                . "▫️ تعداد رخداد: " . faNum($t['count']) . " بار\n"
+                . "▫️ مجموع مدت قطعی: " . faDuration((int)$t['down']) . "\n"
+                . "▫️ مجموع مدت کندی: " . faDuration((int)$t['slow']) . "\n"
+                . "برای جزئیات: «📜 رخدادهای من»";
+        }
         return $txt;
     }
 
@@ -1066,7 +1796,88 @@ class Bot
             . "🌐 <code>" . tgH($url) . "</code>\n\n"
             . "📊 سایت‌های نمایش‌داده‌شده: " . faNum($summary['total']) . "\n"
             . "🔁 به‌روزرسانی خودکار هر " . faNum(max(10, Db::getInt('check_interval', 20))) . " ثانیه\n\n"
-            . "⚠️ هرکسی این لینک را داشته باشد می‌تواند سایت‌های شما را ببیند؛ با «🔄 تغییر لینک» می‌توانید لینک قبلی را باطل کنید.";
+            . "<b>🧩 سه راه متفاوت برای اشتراک‌گذاری</b>\n"
+            . "۱) همین لینک — همهٔ سایت‌های شما، فقط برای نمایش (بدون اعلان)\n"
+            . "۲) «🌐 لینک تک‌سایت» در منوی هر سایت — فقط همان یک سایت\n"
+            . "۳) «👥 اشتراک‌گذاری» — لینک دعوت می‌سازد تا طرف مقابل هشدارها را در چت خودش بگیرد\n\n"
+            . "⚠️ هرکسی لینک نمایشی را داشته باشد می‌تواند سایت‌ها را ببیند؛ با «🔄 تغییر لینک» لینک قبلی را باطل می‌کنید.";
+    }
+
+    private function rankingText(): string
+    {
+        $userPoints = $this->u['user_points'] ?? 0;
+        $userRank = $this->u['user_rank'] ?? 1;
+        $maxSites = $this->maxSites();
+        $sites = Db::all('SELECT * FROM `site` WHERE `user_id` = ? AND `paused` = 0', [$this->uid]);
+        $activeSites = count(array_filter($sites, fn($s) => ($s['status'] ?? 'unknown') === 'up'));
+        $totalSites = count($sites);
+        
+        // Get ranking configuration
+        $rankingInterval = Db::getInt('ranking_interval', 60);
+        $pointsPerDay = Db::getInt('points_per_day', 1);
+        $pointsPerUptimeHour = Db::getInt('points_per_uptime_hour', 5);
+        
+        // Calculate next point award time
+        $today = date('Y-m-d');
+        $lastAwarded = Db::val("SELECT `v` FROM `settings` WHERE `k` = 'last_points_{$this->uid}_{$today}'");
+        $daysSinceAward = (int)$lastAwarded > 0 ? max(0, (time() - strtotime($lastAwarded)) / 86400) : 1;
+        
+        $txt = "📊 <b>رنکینگuptime-bot</b>\n\n"
+            . "🏅 <b>امتیازات شما:</b>\n"
+            . "   - امتیاز جاری: {$userPoints}\n"
+            . "   - سطح رتبه: {$userRank}\n"
+            . "   - سایت‌های فعال: {$activeSites} از {$totalSites}\n\n"
+            . "⚙️ <b>تنظیمات امتیازNosانی:</b>\n"
+            . "   - بازه Premio: {$rankingInterval} دقیقه\n"
+            . "   - امتیاز روزانه: {$pointsPerDay} امتیاز\n"
+            . "   - بونوس uptime ساعت: {$pointsPerUptimeHour} امتیاز\n\n";
+        
+        // Calculate progress to next rank
+        $pointsToNextRank = max(0, (($userRank * 100) + 100) - $userPoints);
+        $txt .= "📈 <b>進度 به رتبه بعدی:</b> {$pointsToNextRank} امتیاز بیشتر نیاز دارد\n\n";
+        
+        // Show site details
+        $txt .= "🌐 <b>جزئیات سایت‌ها:</b>\n"
+            . "   - کل سایت‌ها: {$totalSites}\n"
+            . "   - فعال: 🟢 {$activeSites}\n"
+            . "   - قطعی: 🔴 " . (($totalSites - $activeSites > 0 ? faNum($totalSites - $activeSites) : '0') ) . "\n\n";
+        
+        // Award status
+        if ((int)$lastAwarded < strtotime($today)) {
+            $txt .= "💡 <b>امتیاز روزانه:</b> هنوز دریافت نشده است.\n";
+            $txt .= "برای دریافت روزانه، منتظر چک‌های خودکار بمانید یا ادمین را تماس بگیرید.\n\n";
+        } else {
+            $txt .= "✅ <b>امتیاز روزانه:</b> امروز دریافت کردید.\n\n";
+        }
+        
+        // Rank benefits
+        $txt .= "🎖 <b>مزایا بر اساس رتبه:</b>\n";
+        if ($userRank >= 5) {
+            $txt .= "   - اولویت در پشتیبانی\n";
+            $txt .= "   - حداکثر 10 سایت\n";
+        }
+        if ($userRank >= 3) {
+            $txt .= "   - آمار részیلی\n";
+        }
+        if ($userRank >= 1) {
+            $txt .= "   - حمایت básicos\n";
+        }
+        
+        return $txt;
+    }
+
+    private function rankingMenu(): string
+    {
+        $isAdmin = $this->isAdmin();
+        $rows = [
+            [['text' => '📊 رتبه من'], ['text' => '👥 Leaderboard (ادمین)']],
+            [['text' => '💡 نحوه امتیازNosانی'], ['text' => '📅 تاریخچه獲得']],
+        ];
+        if ($isAdmin) {
+            $rows[] = [['text' => '⚙️ تنظیمات رنکینگ'], ['text' => '📊 آمارanking']];
+        }
+        $rows[] = [['text' => '🔙 منو'], ['text' => 'ℹ️ راهنما']];
+        return BotApi::kb($rows);
     }
 
     private function subText(): string
@@ -1141,7 +1952,25 @@ class Bot
             . "▫️ آخرین ادامه: " . ($p['last_resume'] ? timeAgo($p['last_resume'], tzOffset()) : '—') . "\n\n"
             . "<b>💰 اشتراک</b>\n"
             . "▫️ حالت: " . ['open' => 'باز', 'code' => 'کد فعال‌سازی', 'paid' => 'پرداخت'][Db::get('access_mode', 'open')] . "\n"
-            . "▫️ پرداخت‌های در انتظار: " . faNum($o['payments_pending']) . " • کدهای بدون مصرف: " . faNum($o['codes_unused']);
+            . "▫️ پرداخت‌های در انتظار: " . faNum($o['payments_pending']) . " • کدهای بدون مصرف: " . faNum($o['codes_unused'])
+            . "<b>👥 گروه‌ها و کانال‌ها</b>\n"
+            . "▫️ گروه: " . faNum((int)Db::val("SELECT COUNT(*) FROM `chat_hub` WHERE `chat_type` <> 'channel'"))
+            . " • کانال: " . faNum((int)Db::val("SELECT COUNT(*) FROM `chat_hub` WHERE `chat_type` = 'channel'")) . "\n"
+            . "▫️ مانیتورهای گروهی: " . faNum((int)Db::val('SELECT COUNT(*) FROM `site` WHERE `chat_id` <> 0'))
+            . " • سقف هر گروه: " . faNum(Db::getInt('group_max_sites', 10)) . "\n\n"
+            . "<b>🔐 گواهی و دامنه</b>\n"
+            . "▫️ گواهی نزدیک انقضا: " . faNum((int)Db::val('SELECT COUNT(*) FROM `site` WHERE `ssl_days` >= 0 AND `ssl_days` <= ? AND `paused` = 0', [Db::getInt('ssl_warn_days', 14)]))
+            . " (آستانه: " . faNum(Db::getInt('ssl_warn_days', 14)) . " روز)\n"
+            . "▫️ خطای گواهی: " . faNum((int)Db::val("SELECT COUNT(*) FROM `site` WHERE `ssl_error` <> '' AND `ssl_check_at` IS NOT NULL")) . "\n"
+            . "▫️ دامنه‌های پایش‌شده: " . faNum((int)Db::val('SELECT COUNT(*) FROM `domain_watch`'))
+            . " • نزدیک انقضا: " . faNum((int)Db::val("SELECT COUNT(*) FROM `domain_watch` WHERE `status` = 'ok' AND `expires_at` IS NOT NULL AND `expires_at` <= DATE_ADD(NOW(), INTERVAL ? DAY)", [Db::getInt('domain_warn_days', 14)])) . "\n\n"
+            . "<b>📜 رخدادها</b>\n"
+            . "▫️ ۲۴ ساعت اخیر: " . faNum((int)Db::val("SELECT COUNT(*) FROM `incident` WHERE `start_at` >= DATE_SUB(NOW(), INTERVAL 1 DAY)"))
+            . " • قطعی: " . faNum((int)Db::val("SELECT COUNT(*) FROM `incident` WHERE `kind` = 'down' AND `start_at` >= DATE_SUB(NOW(), INTERVAL 1 DAY)"))
+            . " • کندی: " . faNum((int)Db::val("SELECT COUNT(*) FROM `incident` WHERE `kind` = 'slow' AND `start_at` >= DATE_SUB(NOW(), INTERVAL 1 DAY)")) . "\n"
+            . "▫️ رخداد باز: " . faNum((int)Db::val('SELECT COUNT(*) FROM `incident` WHERE `end_at` IS NULL'))
+            . " • مجموع مدت قطعی ۳۰ روز: "
+            . faDuration((int)Db::val("SELECT COALESCE(SUM(`duration`),0) FROM `incident` WHERE `kind` = 'down' AND `start_at` >= DATE_SUB(NOW(), INTERVAL 30 DAY)"));
     }
 
     private function adminPanelText(): string
@@ -1149,6 +1978,10 @@ class Bot
         $s = Db::allSettings();
         $e = Stats::engine();
         $modeTxt = ['open' => '🔓 باز', 'code' => '🎟 کد فعال‌سازی', 'paid' => '💳 پرداخت'][Db::get('access_mode', 'open')] ?? '—';
+        $mentionTxt = ['none' => 'بدون منشن', 'admins' => 'منشن ادمین‌ها', 'all' => 'همه'][Db::get('group_mention', 'admins')] ?? '—';
+        $hubs = Db::all('SELECT `chat_type`, COUNT(*) c FROM `chat_hub` GROUP BY `chat_type`');
+        $hubTxt = '';
+        foreach ($hubs as $h) $hubTxt .= ((string)$h['chat_type'] === 'channel' ? '📢 کانال: ' : '👥 گروه: ') . faNum((int)$h['c']) . '  ';
         return "🛠 <b>پنل مدیریت</b>\n\n"
             . "▫️ سقف کاربران: " . ((int)($s['max_users'] ?? 0) > 0 ? faNum((int)$s['max_users']) : 'نامحدود') . "\n"
             . "▫️ سقف سایت عادی: " . faNum((int)($s['max_sites'] ?? 5)) . " • ویژه: " . faNum((int)($s['vip_max_sites'] ?? 10)) . "\n"
@@ -1157,7 +1990,13 @@ class Bot
             . "▫️ حالت دسترسی: " . $modeTxt . "\n"
             . "▫️ قیمت اشتراک: " . ((int)($s['price'] ?? 0) > 0 ? faMoney((int)$s['price']) : '—') . " • مدت: " . faNum((int)($s['vip_days'] ?? 30)) . " روز\n"
             . "▫️ شماره کارت: <code>" . tgH((string)($s['card'] ?? '—')) . "</code>\n"
-            . "▫️ اعلان‌های سراسری: " . (Db::getBool('notify', true) ? '🔔 روشن' : '🔕 خاموش') . "\n"
+            . "▫️ اعلان‌های سراسری: " . (Db::getBool('notify', true) ? '🔔 روشن' : '🔕 خاموش')
+            . " • کندی: " . (Db::getBool('notify_slow', true) ? '🔔 روشن' : '🔕 خاموش') . "\n"
+            . "▫️ 🔐 هشدار گواهی: " . faNum((int)($s['ssl_warn_days'] ?? 14)) . " روز قبل"
+            . " • 🌐 هشدار دامنه: " . faNum((int)($s['domain_warn_days'] ?? 14)) . " روز قبل\n"
+            . "▫️ سقف دامنه: " . ((int)($s['max_domains'] ?? 10) > 0 ? faNum((int)$s['max_domains']) : 'نامحدود') . "\n"
+            . "▫️ سقف مانیتور گروه: " . faNum((int)($s['group_max_sites'] ?? 10)) . " • منشن: " . $mentionTxt . "\n"
+            . ($hubTxt !== '' ? "▫️ گروه/کانال‌های متصل: " . trim($hubTxt) . "\n" : '')
             . "▫️ موتور چک: " . ($e['paused'] ? '⏸ <b>متوقف</b>' : '🟢 فعال')
             . ($e['last_round'] ? " • آخرین راند: " . timeAgo($e['last_round'], tzOffset()) : '');
     }
@@ -1216,9 +2055,11 @@ class Bot
         $paused = $this->u && (int)$this->u['paused'] === 1;
         $rows = [
             [['text' => '➕ افزودن سایت'], ['text' => '📋 سایت‌های من']],
-            [['text' => '📈 گزارش من'], ['text' => '🔗 صفحهٔ وضعیت من']],
-            [['text' => $paused ? '▶️ ادامهٔ چک‌ها' : '⏸ توقف چک‌ها'], ['text' => '⚙️ تنظیمات']],
-            [['text' => '🛒 اشتراک ویژه'], ['text' => 'ℹ️ راهنما']],
+            [['text' => '📊 رنکینگ'], ['text' => '📈 گزارش من']],
+            [['text' => '🔗 صفحهٔ وضعیت من'], ['text' => '👥 مانیتورهای مشترک']],
+            [['text' => $paused ? '▶️ ادامهٔ چک‌ها' : '⏸ توقف چک‌ها'], ['text' => '🌐 دامنه‌های من']],
+            [['text' => '⚙️ تنظیمات'], ['text' => '🛒 اشتراک ویژه']],
+            [['text' => 'ℹ️ راهنما']],
         ];
         if ($this->isAdmin()) {
             $rows[] = [['text' => '📊 آمار مدیریتی'], ['text' => '📣 همگانی']];
@@ -1252,7 +2093,11 @@ class Bot
             [['text' => '💎 سقف سایت ویژه', 'callback_data' => 'set:vip_max_sites'], ['text' => '⏱ فاصلهٔ چک', 'callback_data' => 'set:check_interval']],
             [['text' => '🚨 آستانهٔ هشدار', 'callback_data' => 'set:fail_threshold'], ['text' => '🔓 حالت دسترسی', 'callback_data' => 'set:access_mode']],
             [['text' => '🛒 قیمت اشتراک', 'callback_data' => 'set:price'], ['text' => '💳 شماره کارت', 'callback_data' => 'set:card']],
-            [['text' => '📆 مدت اشتراک (روز)', 'callback_data' => 'set:vip_days'], ['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها', 'callback_data' => 'set:notify']],
+            [['text' => '📆 مدت اشتراک (روز)', 'callback_data' => 'set:vip_days'], ['text' => '👥 سقف مانیتور گروه', 'callback_data' => 'set:group_max_sites']],
+            [['text' => '🔐 هشدار گواهی (روز)', 'callback_data' => 'set:ssl_warn_days'], ['text' => '🌐 هشدار دامنه (روز)', 'callback_data' => 'set:domain_warn_days']],
+            [['text' => '📇 سقف دامنه', 'callback_data' => 'set:max_domains'], ['text' => '🔕 اعلان کندی', 'callback_data' => 'set:notify_slow']],
+            [['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها', 'callback_data' => 'set:notify'],
+             ['text' => '🗣 منشن در گروه', 'callback_data' => 'set:group_mention']],
             [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک', 'callback_data' => Db::getBool('pause_all', false) ? 'resume' : 'pause']],
             [['text' => '🎟 کدهای فعال‌سازی', 'callback_data' => 'codes'], ['text' => '📊 آمار', 'callback_data' => 'astats']],
             [['text' => '📣 همگانی', 'callback_data' => 'abroadcast'], ['text' => '⏰ کرون چک', 'callback_data' => 'cron']],
@@ -1262,14 +2107,15 @@ class Bot
 
     private function sitesListMenu(): string
     {
-        $sites = Db::all('SELECT `id`,`label`,`target`,`status`,`paused` FROM `site` WHERE `user_id` = ? ORDER BY `id` ASC', [$this->uid]);
+        $sites = Db::all('SELECT `id`,`label`,`target`,`status`,`paused`,`slow` FROM `site` WHERE `user_id` = ? AND `chat_id` = 0 ORDER BY `id` ASC', [$this->uid]);
         $rows = [];
-        foreach ($sites as $i => $s) {
+        foreach ($sites as $s) {
             $name = mb_substr($s['label'] ?: $s['target'], 0, 30);
-            $icon = ((int)$s['paused'] === 1) ? '🟡' : statusEmoji($s['status']);
+            $icon = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][siteState($s)] ?? '⚪️';
             $rows[] = [['text' => $icon . ' ' . $name, 'callback_data' => 'site:' . $s['id']]];
         }
         $rows[] = [['text' => '➕ افزودن سایت', 'callback_data' => 'addsite'], ['text' => '📈 گزارش', 'callback_data' => 'report']];
+        $rows[] = [['text' => '📜 رخدادها', 'callback_data' => 'uincer'], ['text' => '👥 مشترک', 'callback_data' => 'shared']];
         $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }
@@ -1277,13 +2123,34 @@ class Bot
     private function siteMenu(array $s): string
     {
         $paused = (int)$s['paused'] === 1;
-        return BotApi::ikb([
-            [['text' => '🔁 چک الآن', 'callback_data' => 'sc:' . $s['id']],
-             ['text' => $paused ? '▶️ ادامه' : '⏸ توقف', 'callback_data' => ($paused ? 'sr:' : 'sp:') . $s['id']]],
-            [['text' => '🗑 حذف سایت', 'callback_data' => 'sdel:' . $s['id']],
-             ['text' => '🔗 لینک صفحهٔ وضعیت', 'callback_data' => 'share']],
+        $id = (int)$s['id'];
+        $rows = [
+            [['text' => '🔁 چک الآن', 'callback_data' => 'sc:' . $id],
+             ['text' => $paused ? '▶️ ادامه' : '⏸ توقف', 'callback_data' => ($paused ? 'sr:' : 'sp:') . $id]],
+            [['text' => '🎯 حد کندی', 'callback_data' => 'sms:' . $id],
+             ['text' => '🔎 کلیدواژه', 'callback_data' => 'skw:' . $id]],
+            [['text' => '👥 اشتراک‌گذاری', 'callback_data' => 'sshare:' . $id],
+             ['text' => '📜 رخدادها', 'callback_data' => 'sincer:' . $id]],
+            [['text' => '🌐 لینک تک‌سایت', 'callback_data' => 'slink:' . $id],
+             ['text' => '🔐 گواهی SSL', 'callback_data' => 'ssl:' . $id]],
+            [['text' => '🗑 حذف سایت', 'callback_data' => 'sdel:' . $id]],
             [['text' => '🔙 سایت‌های من', 'callback_data' => 'sites']],
-        ]);
+        ];
+        return BotApi::ikb($rows);
+    }
+
+    private function domainMenu(): string
+    {
+        $rows = [];
+        foreach (Stats::domains($this->uid, 0) as $d) {
+            $exp = (string)$d['expires_at'];
+            $left = $exp !== '' ? (int)floor((strtotime($exp) - time()) / 86400) : null;
+            $icon = $left === null ? '⚪️' : ($left < 0 ? '🔴' : ($left <= (int)$d['warn_days'] ? '🟠' : '🟢'));
+            $rows[] = [['text' => $icon . ' ' . mb_substr((string)$d['domain'], 0, 30), 'callback_data' => 'ddel:' . (int)$d['id']]];
+        }
+        $rows[] = [['text' => '➕ افزودن دامنه', 'callback_data' => 'dadd']];
+        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        return BotApi::ikb($rows);
     }
 
     private function shareMenu(): string
@@ -1311,7 +2178,8 @@ class Bot
     {
         return BotApi::ikb([
             [['text' => (int)$this->u['notify'] ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها', 'callback_data' => 'tnotify']],
-            [['text' => '🔗 صفحهٔ وضعیت من', 'callback_data' => 'share']],
+            [['text' => '👥 مانیتورهای مشترک', 'callback_data' => 'shared'], ['text' => '🌐 دامنه‌های من', 'callback_data' => 'domains']],
+            [['text' => '📜 رخدادهای من', 'callback_data' => 'uincer'], ['text' => '🔗 صفحهٔ وضعیت من', 'callback_data' => 'share']],
             [['text' => '🛒 اشتراک', 'callback_data' => 'sub']],
             [['text' => '🔙 منو', 'callback_data' => 'menu']],
         ]);

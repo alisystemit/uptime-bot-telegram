@@ -71,8 +71,114 @@ class Db
     {
         $pdo = self::pdo();
         foreach (self::schema() as $sql) $pdo->exec($sql);
+        self::syncColumns();
         self::seedDefaults();
         self::$booted = true;
+    }
+
+    // ---------- ارتقای ستون‌ها/ایندکس‌ها ----------
+
+    /** ستون‌های موجود یک جدول: نام کوچک‌شدهٔ ستون => نوع */
+    private static function columns(string $table): array
+    {
+        $out = [];
+        try {
+            $st = self::pdo()->query('SHOW COLUMNS FROM `' . $table . '`');
+            foreach ($st === false ? [] : $st->fetchAll() as $r) {
+                $out[strtolower((string)$r['Field'])] = (string)($r['Type'] ?? '');
+            }
+        } catch (Throwable $e) {
+            // جدول هنوز وجود ندارد — migrate دوباره اجرا می‌شود
+        }
+        return $out;
+    }
+
+    /**
+     * افزودن یک ستون در صورت نبودن (idempotent).
+     * برای نصب‌های قدیمی که جدول از قبل ساخته شده استفاده می‌شود.
+     */
+    public static function ensureColumn(string $table, string $col, string $ddl): bool
+    {
+        static $done = [];
+        $key = $table . '.' . $col;
+        if (isset($done[$key])) return false;
+        $have = self::columns($table);
+        if (!$have) { return false; }               // جدول نیست؛ CREATE TABLE خودش کامل است
+        if (isset($have[strtolower($col)])) { $done[$key] = true; return false; }
+        try {
+            self::pdo()->exec('ALTER TABLE `' . $table . '` ADD COLUMN `' . $col . '` ' . $ddl);
+            $done[$key] = true;
+            return true;
+        } catch (Throwable $e) {
+            @error_log('[uptime] ADD COLUMN ' . $key . ' failed: ' . $e->getMessage());
+            $done[$key] = true;
+            return false;
+        }
+    }
+
+    /** ایندکس‌های یک جدول: نام => تعداد ستون */
+    private static function indexes(string $table): array
+    {
+        $out = [];
+        try {
+            $st = self::pdo()->query('SHOW INDEX FROM `' . $table . '`');
+            foreach ($st === false ? [] : $st->fetchAll() as $r) {
+                $k = strtolower((string)$r['Key_name']);
+                $out[$k] = ($out[$k] ?? 0) + 1;
+            }
+        } catch (Throwable $e) {
+            // بی‌اهمیت
+        }
+        return $out;
+    }
+
+    /**
+     * ستون‌ها و ایندکس‌های نسخه‌های جدیدتر روی جدول‌های قدیمی.
+     * چون CREATE TABLE IF NOT EXISTS روی جدول موجود هیچ کاری نمی‌کند،
+     * این متد بعد از schema اجرا می‌شود.
+     */
+    private static function syncColumns(): void
+    {
+        // ---------- site: مانیتور گروهی، اشتراک، کلیدواژه، آستانهٔ کندی، SSL ----------
+        $siteCols = [
+            'chat_id'        => 'BIGINT NOT NULL DEFAULT 0',
+            'chat_title'     => "VARCHAR(160) NOT NULL DEFAULT ''",
+            'notify_chat'    => 'TINYINT(1) NOT NULL DEFAULT 1',
+            'share_token'    => "VARCHAR(32) NOT NULL DEFAULT ''",
+            'keyword'        => "VARCHAR(190) NOT NULL DEFAULT ''",
+            'max_ms'         => 'INT UNSIGNED NOT NULL DEFAULT 0',
+            'slow'           => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'slow_alerted'   => 'TINYINT(1) NOT NULL DEFAULT 0',
+            'ssl_check_at'   => 'DATETIME NULL DEFAULT NULL',
+            'ssl_days'       => 'INT NOT NULL DEFAULT -1',
+            'ssl_expires_at' => 'DATETIME NULL DEFAULT NULL',
+            'ssl_issuer'     => "VARCHAR(160) NOT NULL DEFAULT ''",
+            'ssl_error'      => "VARCHAR(190) NOT NULL DEFAULT ''",
+            'ssl_warn_days'  => 'INT UNSIGNED NOT NULL DEFAULT 14',
+            'ssl_notified'   => "VARCHAR(40) NOT NULL DEFAULT ''",
+            'resp_avg'       => 'INT NOT NULL DEFAULT 0',
+            'resp_max'       => 'INT NOT NULL DEFAULT 0',
+            'resp_p95'       => 'INT NOT NULL DEFAULT 0',
+        ];
+        foreach ($siteCols as $c => $ddl) self::ensureColumn('site', $c, $ddl);
+
+        // یکتایی هدف باید «کاربر + چت» باشد تا یک سایت در گروه و به‌طور خصوصی
+        // برای یک نفر تکراری محسوب نشود.
+        try {
+            $idx = self::indexes('site');
+            if (isset($idx['uniq_user_target']) && $idx['uniq_user_target'] < 3) {
+                self::pdo()->exec('ALTER TABLE `site` DROP INDEX `uniq_user_target`');
+                $idx = self::indexes('site');
+            }
+            if (!isset($idx['uniq_user_target'])) {
+                self::pdo()->exec('ALTER TABLE `site` ADD UNIQUE KEY `uniq_user_target` (`user_id`, `chat_id`, `target`(120))');
+            }
+            if (!isset($idx['idx_chat'])) {
+                self::pdo()->exec('ALTER TABLE `site` ADD KEY `idx_chat` (`chat_id`, `paused`)');
+            }
+        } catch (Throwable $e) {
+            @error_log('[uptime] site index upgrade failed: ' . $e->getMessage());
+        }
     }
 
     /** آیا جدول‌ها ساخته شده‌اند؟ (برای table.php) */
@@ -117,9 +223,14 @@ class Db
             )" . $engine,
 
             // ===== سایت‌های تحت نظر =====
+            // chat_id = 0 یعنی مانیتور خصوصیِ کاربر؛ هر مقدار دیگری یعنی
+            // مانیتورِ مشترک در گروه/کانال (سقف جداگانه، جدا از max_sites).
+            // توجه: شناسهٔ گروه/کانال در تلگرام منفی است.
             "CREATE TABLE IF NOT EXISTS `site` (
                 `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
                 `user_id` BIGINT UNSIGNED NOT NULL,
+                `chat_id` BIGINT NOT NULL DEFAULT 0,
+                `chat_title` VARCHAR(160) NOT NULL DEFAULT '',
                 `target` VARCHAR(255) NOT NULL,
                 `label` VARCHAR(200) NOT NULL DEFAULT '',
                 `type` VARCHAR(8) NOT NULL DEFAULT 'http',
@@ -128,6 +239,7 @@ class Db
                 `paused` TINYINT(1) NOT NULL DEFAULT 0,
                 `paused_since` DATETIME NULL DEFAULT NULL,
                 `paused_total` INT UNSIGNED NOT NULL DEFAULT 0,
+                `notify_chat` TINYINT(1) NOT NULL DEFAULT 1,
                 `status` VARCHAR(10) NOT NULL DEFAULT 'unknown',
                 `last_check_at` DATETIME NULL DEFAULT NULL,
                 `last_ms` INT NOT NULL DEFAULT 0,
@@ -141,11 +253,27 @@ class Db
                 `last_down_duration` INT UNSIGNED NOT NULL DEFAULT 0,
                 `total_checks` INT UNSIGNED NOT NULL DEFAULT 0,
                 `total_fails` INT UNSIGNED NOT NULL DEFAULT 0,
+                `slow` TINYINT(1) NOT NULL DEFAULT 0,
+                `slow_alerted` TINYINT(1) NOT NULL DEFAULT 0,
+                `max_ms` INT UNSIGNED NOT NULL DEFAULT 0,
+                `keyword` VARCHAR(190) NOT NULL DEFAULT '',
+                `share_token` VARCHAR(32) NOT NULL DEFAULT '',
+                `ssl_check_at` DATETIME NULL DEFAULT NULL,
+                `ssl_days` INT NOT NULL DEFAULT -1,
+                `ssl_expires_at` DATETIME NULL DEFAULT NULL,
+                `ssl_issuer` VARCHAR(160) NOT NULL DEFAULT '',
+                `ssl_error` VARCHAR(190) NOT NULL DEFAULT '',
+                `ssl_warn_days` INT UNSIGNED NOT NULL DEFAULT 14,
+                `ssl_notified` VARCHAR(40) NOT NULL DEFAULT '',
+                `resp_avg` INT NOT NULL DEFAULT 0,
+                `resp_max` INT NOT NULL DEFAULT 0,
+                `resp_p95` INT NOT NULL DEFAULT 0,
                 `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (`id`),
-                UNIQUE KEY `uniq_user_target` (`user_id`, `target`(120)),
+                UNIQUE KEY `uniq_user_target` (`user_id`, `chat_id`, `target`(120)),
                 KEY `idx_due` (`paused`, `last_check_at`),
-                KEY `idx_user` (`user_id`)
+                KEY `idx_user` (`user_id`),
+                KEY `idx_chat` (`chat_id`, `paused`)
             )" . $engine,
 
             // ===== لاگ چک‌ها (فقط ۲۴ ساعت اخیر؛ برای نوار تاریخچه و اسپارک‌لاین) =====
@@ -222,6 +350,82 @@ class Db
                 `update_id` BIGINT UNSIGNED NOT NULL,
                 `ts` DATETIME NOT NULL,
                 PRIMARY KEY (`update_id`)
+            )" . $engine,
+
+            // ===== گروه‌ها و کانال‌های متصل به ربات =====
+            "CREATE TABLE IF NOT EXISTS `chat_hub` (
+                `chat_id` BIGINT NOT NULL,
+                `chat_type` VARCHAR(12) NOT NULL DEFAULT 'group',
+                `title` VARCHAR(160) NOT NULL DEFAULT '',
+                `share_token` VARCHAR(32) NOT NULL DEFAULT '',
+                `notify` TINYINT(1) NOT NULL DEFAULT 1,
+                `mention` VARCHAR(10) NOT NULL DEFAULT 'admins',
+                `max_sites` INT UNSIGNED NOT NULL DEFAULT 0,
+                `step` VARCHAR(40) NOT NULL DEFAULT 'idle',
+                `step_user` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `temp` TEXT NULL DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `last_active` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`chat_id`),
+                KEY `idx_share` (`share_token`)
+            )" . $engine,
+
+            // ===== اعضای ادمینِ گروه (کش برای تشخیص دسترسی بدون تماس با API) =====
+            "CREATE TABLE IF NOT EXISTS `chat_admin` (
+                `chat_id` BIGINT NOT NULL,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `is_admin` TINYINT(1) NOT NULL DEFAULT 0,
+                `username` VARCHAR(64) NOT NULL DEFAULT '',
+                `checked_at` DATETIME NOT NULL,
+                PRIMARY KEY (`chat_id`, `user_id`)
+            )" . $engine,
+
+            // ===== رخدادها (قطعی/کندی/SSL) با علت و مدت =====
+            "CREATE TABLE IF NOT EXISTS `incident` (
+                `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `site_id` INT UNSIGNED NOT NULL,
+                `kind` VARCHAR(12) NOT NULL DEFAULT 'down',
+                `start_at` DATETIME NOT NULL,
+                `end_at` DATETIME NULL DEFAULT NULL,
+                `duration` INT UNSIGNED NOT NULL DEFAULT 0,
+                `reason` VARCHAR(190) NOT NULL DEFAULT '',
+                `peak_ms` INT NOT NULL DEFAULT 0,
+                `checks` INT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (`id`),
+                KEY `idx_site_start` (`site_id`, `start_at`),
+                KEY `idx_open` (`site_id`, `kind`, `end_at`),
+                KEY `idx_start` (`start_at`)
+            )" . $engine,
+
+            // ===== اشتراک یک مانیتور با افراد دیگر (دعوت) =====
+            "CREATE TABLE IF NOT EXISTS `site_share` (
+                `site_id` INT UNSIGNED NOT NULL,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `role` VARCHAR(10) NOT NULL DEFAULT 'viewer',
+                `notify` TINYINT(1) NOT NULL DEFAULT 1,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`site_id`, `user_id`),
+                KEY `idx_user` (`user_id`)
+            )" . $engine,
+
+            // ===== پایش انقضای دامنه (WHOIS) =====
+            "CREATE TABLE IF NOT EXISTS `domain_watch` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `chat_id` BIGINT NOT NULL DEFAULT 0,
+                `domain` VARCHAR(253) NOT NULL,
+                `warn_days` INT UNSIGNED NOT NULL DEFAULT 14,
+                `expires_at` DATETIME NULL DEFAULT NULL,
+                `registrar` VARCHAR(160) NOT NULL DEFAULT '',
+                `status` VARCHAR(10) NOT NULL DEFAULT 'unknown',
+                `last_check` DATETIME NULL DEFAULT NULL,
+                `last_error` VARCHAR(190) NOT NULL DEFAULT '',
+                `notified_at` DATETIME NULL DEFAULT NULL,
+                `notified_exp` DATETIME NULL DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uniq_scope` (`user_id`, `chat_id`, `domain`(120)),
+                KEY `idx_domain` (`domain`)
             )" . $engine,
         ];
     }

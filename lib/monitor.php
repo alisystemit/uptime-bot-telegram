@@ -67,9 +67,7 @@ class Monitor
                    FROM `site` s
                    JOIN `user` u ON u.id = s.user_id
                   WHERE s.paused = 0
-                    AND u.paused = 0
-                    AND u.is_blocked = 0
-                    AND u.access = 1
+                    AND (s.chat_id <> 0 OR (u.paused = 0 AND u.is_blocked = 0 AND u.access = 1))
                     AND (s.last_check_at IS NULL OR s.last_check_at <= DATE_SUB(NOW(), INTERVAL " . $interval . " SECOND))"
             );
             if (!$sites) {
@@ -77,6 +75,7 @@ class Monitor
                 // تا پنل مدیریت کرون را «در حال اجرا» ببیند.
                 Db::set('last_round_at', date('Y-m-d H:i:s'));
                 self::maybePrune();
+                self::maybeMaintenance();
                 return ['total' => 0, 'up' => 0, 'down' => 0, 'alerts' => 0];
             }
 
@@ -99,6 +98,7 @@ class Monitor
 
             Db::set('last_round_at', date('Y-m-d H:i:s'));
             self::maybePrune();
+            self::maybeMaintenance();
             return $stats;
         } finally {
             self::unlock($lock);
@@ -153,6 +153,9 @@ class Monitor
 
     // ---------------------------------------------------------------- HTTP
 
+    /** حداکثر بایتی که برای بررسی «کلیدواژه» خوانده می‌شود */
+    private const BODY_LIMIT = 262144;
+
     /** @param array[] $sites @return array<int,array> */
     private static function probeHttpBatch(array $sites): array
     {
@@ -170,6 +173,11 @@ class Monitor
                 $url = (string)$s['target'];
             }
             if ($url === '') $url = 'http://' . $s['host'] . (!empty($s['port']) ? ':' . $s['port'] : '');
+            $needBody = trim((string)($s['keyword'] ?? '')) !== '';
+            // شیء به‌جای متغیر: تا هر handle بدنهٔ مستقل خودش را داشته باشد
+            $buf = new stdClass();
+            $buf->body = '';
+            $buf->trunc = false;
             $ch = curl_init();
             curl_setopt_array($ch, [
                 CURLOPT_URL => $url,
@@ -182,12 +190,22 @@ class Monitor
                 CURLOPT_USERAGENT => 'UptimeMonitor/1.0',
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_ENCODING => '',
-                // فقط سرآخواست را می‌خواهیم؛ اولین بایتِ بدنه → قطع اتصال
-                CURLOPT_WRITEFUNCTION => function () { return 0; },
+                // بدنه فقط وقتی لازم است که کاربر «کلیدواژه» تعیین کرده باشد
+                CURLOPT_WRITEFUNCTION => function ($ch, $chunk) use ($buf, $needBody): int {
+                    $n = strlen($chunk);
+                    if (!$needBody) return 0;               // فقط سرآخواست لازم است
+                    if (strlen($buf->body) + $n > self::BODY_LIMIT) {
+                        $buf->body .= substr($chunk, 0, max(0, self::BODY_LIMIT - strlen($buf->body)));
+                        $buf->trunc = true;
+                        return 0;                          // بقیه را نگیر
+                    }
+                    $buf->body .= $chunk;
+                    return $n;
+                },
             ]);
             if (defined('CURLOPT_PROTOCOLS')) @curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
             curl_multi_add_handle($mh, $ch);
-            $map[spl_object_id($ch)] = ['ch' => $ch, 'site' => $s, 'start' => microtime(true)];
+            $map[spl_object_id($ch)] = ['ch' => $ch, 'site' => $s, 'start' => microtime(true), 'buf' => $buf];
         }
 
         $running = null;
@@ -207,17 +225,30 @@ class Monitor
             $err = (string)curl_error($ch);
             $ms = (int)round(max($total, $startT) * 1000);
             if ($total <= 0) $ms = (int)round((microtime(true) - $item['start']) * 1000);
+            $body = (string)$item['buf']->body;
+            $truncated = (bool)$item['buf']->trunc;
 
             if ($code > 0) {
                 // سرور جواب داده است؛ فقط خطای ۵xx یعنی سرویس از کار افتاده
                 $ok = $code < 500;
-                $out[$id] = [
+                $res = [
                     'ok' => $ok,
                     'ms' => $ms,
                     'code' => $code,
                     'error' => $ok ? '' : ('پاسخ سرور: HTTP ' . $code),
                     'detail' => 'HTTP ' . $code,
                 ];
+                // ---- بررسی کلیدواژه (اختیاری) ----
+                $kw = trim((string)($s['keyword'] ?? ''));
+                if ($ok && $kw !== '') {
+                    if (!$truncated && mb_stripos($body, $kw) === false) {
+                        $res['ok'] = false;
+                        $res['error'] = 'کلیدواژهٔ «' . mb_substr($kw, 0, 40) . '» در پاسخ پیدا نشد';
+                    } elseif ($truncated) {
+                        $res['detail'] .= ' • کلیدواژه ناقص';
+                    }
+                }
+                $out[$id] = $res;
             } else {
                 $out[$id] = [
                     'ok' => false,
@@ -418,6 +449,11 @@ class Monitor
         $fails = (int)($site['consecutive_fail'] ?? 0);
         $threshold = max(1, Db::getInt('fail_threshold', 2));
 
+        // ---- آستانهٔ کندی (اختیاری) ----
+        $maxMs = (int)($site['max_ms'] ?? 0);
+        $isSlow = $ok && $maxMs > 0 && $ms > $maxMs;
+        $wasSlow = (int)($site['slow'] ?? 0) === 1;
+
         $set = [
             'last_check_at' => $now,
             'last_ms' => $ms,
@@ -425,6 +461,7 @@ class Monitor
             'last_error' => $err,
             'total_checks' => (int)$site['total_checks'] + 1,
             'total_fails' => (int)$site['total_fails'] + ($ok ? 0 : 1),
+            'slow' => $isSlow ? 1 : 0,
         ];
 
         $notifyKind = null;
@@ -463,30 +500,138 @@ class Monitor
             }
         }
 
+        // ---- رخدادها: تاریخچهٔ کامل قطعی/کندی با علت و مدت ----
+        $newStatus = (string)($set['status'] ?? $prevStatus);
+        try {
+            if ($newStatus === 'down' && $prevStatus !== 'down') {
+                Stats::openIncident($id, 'down', $err);
+            } elseif ($newStatus !== 'down' && $prevStatus === 'down') {
+                Stats::closeIncident($id, 'down', $ms);
+            } elseif ($newStatus === 'down') {
+                Stats::bumpIncident($id, 'down', $ms);
+            }
+            if ($isSlow && !$wasSlow) {
+                Stats::openIncident($id, 'slow', 'پاسخ ' . $ms . ' میلی‌ثانیه (حد ' . $maxMs . ')');
+            } elseif (!$isSlow && $wasSlow) {
+                Stats::closeIncident($id, 'slow', $ms);
+            } elseif ($isSlow) {
+                Stats::bumpIncident($id, 'slow', $ms);
+            }
+        } catch (Throwable $e) {
+            // رخدادها نباید راند را بشکنند
+        }
+
         $sql = 'UPDATE `site` SET ' . implode(', ', array_map(fn($k) => "`{$k}` = ?", array_keys($set))) . ' WHERE `id` = ?';
         try {
             Db::q($sql, array_merge(array_values($set), [$id]));
         } catch (Throwable $e) { /* لاگ در botapi انجام می‌شود */ }
 
+        // ---- سیستم امتیازNosانی (Ranking Points) ----
+        try {
+            $pointsPerUptimeHour = Db::getInt('points_per_uptime_hour', 5);
+            $pointsPerDay = Db::getInt('points_per_day', 1);
+            $rankingInterval = Db::getInt('ranking_interval', 60);
+            
+            // Award points if site is up
+            if ($ok) {
+                // Check if user should get daily points
+                $user = Db::one('SELECT * FROM `user` WHERE `id` = ?', [$site['user_id']]);
+                if ($user) {
+                    $today = date('Y-m-d');
+                    $pointsKey = "last_points_{$site['user_id']}_{$today}";
+                    $lastAwarded = Db::val("SELECT `v` FROM `settings` WHERE `k` = ?", [$pointsKey]);
+
+                    // Award daily points if not awarded today
+                    if ((int)$lastAwarded < strtotime($today)) {
+                        $newPoints = (($user['user_points'] ?? 0) + $pointsPerDay);
+                        $newRank = min(10, max(1, 1 + floor($newPoints / 100)));
+                        Db::q("UPDATE `user` SET `user_points` = ?, `user_rank` = ? WHERE `id` = ?", [$newPoints, $newRank, $site['user_id']]);
+                        Db::q("INSERT INTO `settings` (`k`,`v`) VALUES (?,?) ON DUPLICATE KEY UPDATE `v` = VALUES(`v`)", [$pointsKey, date('Y-m-d')]);
+                        
+                        // Log the event
+                        Db::logEvent($site['user_id'], 'daily_points', "{$pointsPerDay} points awarded");
+                    }
+                    
+                    // Award uptime bonus hours
+                    $uptimeHours = Db::val("SELECT COALESCE(SUM(`checks`),0)/60 FROM `uptime_hour` WHERE `site_id` = ? AND `bucket` >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", [$site['id']]);
+                    if ($uptimeHours > 0 && $uptimeHours >= 1) {
+                        $bonusPoints = floor($uptimeHours) * $pointsPerUptimeHour;
+                        if ($bonusPoints > 0) {
+                            $newPoints = (($user['user_points'] ?? 0) + $bonusPoints);
+                            $newRank = min(10, max(1, 1 + floor($newPoints / 100)));
+                            Db::q("UPDATE `user` SET `user_points` = ?, `user_rank` = ? WHERE `id` = ?", [$newPoints, $newRank, $site['user_id']]);
+                            Db::logEvent($site['user_id'], 'uptime_bonus', "{$bonusPoints} points from {$uptimeHours}h uptime");
+                        }
+                    }
+                }
+            }
+        } catch (Throwable $e) {
+            // Points system should not break the main check
+            uptimeLog('error', 'Ranking points system error: ' . $e->getMessage());
+        }
+        
         if ($ok) $stats['up']++; else $stats['down']++;
         $stats['ms'] += $ms;
 
         if ($notifyKind !== null) {
             $stats['alerts'] += self::notify($site, $notifyKind, $err, $outageSec, $ms) ? 1 : 0;
+        } elseif ($isSlow !== $wasSlow) {
+            $stats['alerts'] += self::notify($site, $isSlow ? 'slow' : 'slow_ok', $err, 0, $ms) ? 1 : 0;
         }
     }
 
     // ---------------------------------------------------------------- اطلاع‌رسانی
 
+    /**
+     * گیرنده‌های اعلان یک سایت.
+     *  - مانیتور گروهی → اعلان داخل خود گروه/کانال (نه پیام خصوصیِ سازنده)
+     *  - مانیتور خصوصی → پیام خصوصی صاحب سایت
+     *  - هر دو → همهٔ کسانی که آن مانیتور برایشان به‌اشتراک گذاشته شده
+     *
+     * @return int[] فهرست chat_id مقصدها
+     */
+    public static function notifyTargets(array $site): array
+    {
+        $ids = [];
+        $chatId = (int)($site['chat_id'] ?? 0);
+        if (Group::isGroupChat($chatId)) {
+            if ((int)($site['notify_chat'] ?? 1) !== 1) return $ids;
+            $hub = Group::get($chatId);
+            if ($hub && !Group::notifyOn($hub)) return $ids;
+            $ids[] = $chatId;
+        } elseif ((int)($site['user_notify'] ?? 1) === 1) {
+            $ids[] = (int)$site['user_id'];
+        }
+        try {
+            foreach (Db::all('SELECT `user_id` FROM `site_share` WHERE `site_id` = ? AND `notify` = 1', [(int)$site['id']]) as $sh) {
+                $ids[] = (int)$sh['user_id'];
+            }
+        } catch (Throwable $e) {
+            // بی‌اهمیت
+        }
+        return array_values(array_unique(array_filter($ids, static fn($v) => (int)$v !== 0)));
+    }
+
     private static function notify(array $site, string $kind, string $err, int $outageSec = 0, int $ms = 0): bool
     {
-        if (!(int)($site['user_notify'] ?? 1)) return false;
         if (!Db::getBool('notify', true)) return false;
+        $targets = self::notifyTargets($site);
+        if (!$targets) return false;
         $uid = (int)$site['user_id'];
 
         $label = tgH($site['label'] ?: $site['target']);
         $tz = tzOffset();
         $nowFa = faNum(date('H:i:s', time() + (int)round($tz * 3600)));
+        $chatId = (int)($site['chat_id'] ?? 0);
+        $isGroup = Group::isGroupChat($chatId);
+        $hub = $isGroup ? Group::get($chatId) : null;
+        $isChannel = $hub && (string)$hub['chat_type'] === 'channel';
+
+        $header = '';
+        if ($isGroup && !$isChannel) {
+            $title = $hub ? (string)$hub['title'] : 'گروه';
+            $header = '📢 <b>' . tgH(truncateFa($title, 40)) . "</b>\n";
+        }
 
         if ($kind === 'down' || $kind === 'down_repeat') {
             $text = "🔴 <b>هشدار قطعی سرویس</b>\n\n"
@@ -496,7 +641,26 @@ class Monitor
                 . "❌ دلیل: " . tgH($err !== '' ? $err : 'بدون پاسخ') . "\n"
                 . "🔁 چک‌های ناموفق پیاپی: " . faNum((int)$site['consecutive_fail'] + 1) . "\n"
                 . ($kind === 'down_repeat' ? "\n⏱ هشدار تکراری — سرویس همچنان قطع است." : '');
+            if ($isGroup && !$isChannel) {
+                $m = Group::mentionAdmins($chatId, (string)($hub['mention'] ?? ''));
+                if ($m !== '') $text = $m . "\n" . $text;
+            }
             Db::logEvent($uid, 'alert_down', $site['target']);
+        } elseif ($kind === 'slow' || $kind === 'slow_ok') {
+            if (!Db::getBool('notify_slow', true)) return false;
+            if ($kind === 'slow') {
+                $text = "🟠 <b>هشدار کندی پاسخ</b>\n\n"
+                    . "🔗 سایت: <code>{$label}</code>\n"
+                    . "⚡️ زمان پاسخ: " . faMs($ms) . "\n"
+                    . "🎯 حد مجاز: " . faMs((int)$site['max_ms']) . "\n"
+                    . "⏰ زمان: {$nowFa}";
+                Db::logEvent($uid, 'alert_slow', $site['target']);
+            } else {
+                $text = "✅ <b>پاسخ به حالت عادی برگشت</b>\n\n"
+                    . "🔗 سایت: <code>{$label}</code>\n"
+                    . "⚡️ زمان پاسخ: " . faMs($ms) . "\n"
+                    . "⏰ زمان: {$nowFa}";
+            }
         } else {
             $avg = Stats::uptime($site, 1)['pct'] ?? null;
             $text = "🟢 <b>سرویس دوباره برقرار شد</b>\n\n"
@@ -508,8 +672,15 @@ class Monitor
             Db::logEvent($uid, 'alert_up', $site['target']);
         }
 
-        $r = tgSend($uid, $text);
-        return !empty($r['ok']);
+        $text = $header . $text;
+        $ok = false;
+        foreach ($targets as $cid) {
+            // شناسهٔ گروه/کانال منفی است؛ فقط صفر معتبر نیست
+            if ((int)$cid === 0) continue;
+            $r = tgSend($cid, $text);
+            if (!empty($r['ok'])) $ok = true;
+        }
+        return $ok;
     }
 
     // ---------------------------------------------------------------- پاک‌سازی
@@ -524,6 +695,169 @@ class Monitor
             Db::exec("DELETE FROM `uptime_hour` WHERE `bucket` < DATE_SUB(NOW(), INTERVAL 120 DAY)");
             Db::exec("DELETE FROM `seen_update` WHERE `ts` < DATE_SUB(NOW(), INTERVAL 3 DAY)");
             Db::exec("DELETE FROM `events` WHERE `ts` < DATE_SUB(NOW(), INTERVAL 180 DAY)");
+            Db::exec("DELETE FROM `incident` WHERE `end_at` IS NOT NULL AND `end_at` < DATE_SUB(NOW(), INTERVAL 180 DAY)");
+            Db::exec("DELETE FROM `chat_admin` WHERE `checked_at` < DATE_SUB(NOW(), INTERVAL 7 DAY)");
         } catch (Throwable $e) { /* پاک‌سازی هرگز نباید راند را بشکند */ }
+    }
+
+    // ---------------------------------------------------------------- نگهداری
+
+    /** فاصلهٔ دو اجرای نگهداری (ثانیه) */
+    public const MAINT_INTERVAL = 1800;
+
+    private static function maybeMaintenance(): void
+    {
+        $gap = max(300, Db::getInt('maint_interval', (string)self::MAINT_INTERVAL));
+        $last = (int)Db::get('last_maint', '0');
+        if ($last > 0 && (time() - $last) < $gap) return;
+        self::maintenance();
+    }
+
+    /**
+     * کارهای سبک و کم‌تکرار (هیچ‌کدام نباید راند چک را کند کنند):
+     *   ۱) تازه‌سازی گواهی SSL سایت‌های HTTPS
+     *   ۲) استعلام WHOIS دامنه‌های پایش‌شده
+     *   ۳) آمار زمان پاسخ ۲۴ ساعت (کمینه/میانگین/صدک۹۵/بیشینه)
+     *
+     * @param bool $force اجرای اجباری (حالت CLI)
+     * @return array{ssl:int, domains:int, resp:int}
+     */
+    public static function maintenance(bool $force = false): array
+    {
+        $out = ['ssl' => 0, 'domains' => 0, 'resp' => 0];
+        if ($force) Db::set('last_maint', (string)time());
+        if (!$force) {
+            $last = (int)Db::get('last_maint', '0');
+            $gap = max(300, Db::getInt('maint_interval', (string)self::MAINT_INTERVAL));
+            if ($last > 0 && (time() - $last) < $gap) return $out;
+            Db::set('last_maint', (string)time());
+        }
+
+        // ---------- ۱) گواهی SSL ----------
+        $sslAge = max(600, Db::getInt('ssl_interval', '3600'));
+        try {
+            $https = Db::all(
+                "SELECT * FROM `site`
+                  WHERE `type` = 'http' AND `target` LIKE 'https://%' AND `paused` = 0
+                    AND (ssl_check_at IS NULL OR ssl_check_at <= DATE_SUB(NOW(), INTERVAL " . $sslAge . " SECOND))
+                  LIMIT 40"
+            );
+        } catch (Throwable $e) {
+            $https = [];
+        }
+        $tz = tzOffset();
+        foreach ($https as $s) {
+            $host = (string)$s['host'];
+            if ($host === '') continue;
+            $info = Ssl::check($host, (int)($s['port'] ?: 443));
+            $warn = max(1, (int)($s['ssl_warn_days'] ?: Db::getInt('ssl_warn_days', 14)));
+            try {
+                Db::q(
+                    'UPDATE `site` SET ssl_check_at = NOW(), ssl_days = ?, ssl_expires_at = ?, ssl_issuer = ?, ssl_error = ? WHERE id = ?',
+                    [
+                        (int)$info['days'],
+                        $info['expires'],
+                        mb_substr((string)$info['issuer'], 0, 160),
+                        mb_substr((string)$info['error'], 0, 190),
+                        (int)$s['id'],
+                    ]
+                );
+            } catch (Throwable $e) {
+                continue;
+            }
+            $out['ssl']++;
+            if (empty($info['ok'])) continue;
+            $days = (int)$info['days'];
+            if ($days > $warn) continue;
+
+            // فقط یک‌بار برای هر تاریخ انقضا هشدار بده
+            $stamp = (string)($info['expires'] ?? '');
+            if ((string)$s['ssl_notified'] === $stamp) continue;
+            Db::q('UPDATE `site` SET ssl_notified = ? WHERE id = ?', [mb_substr($stamp, 0, 40), (int)$s['id']]);
+            $text = ($days <= 0 ? "🔴 <b>گواهی SSL منقضی شده</b>" : "🟠 <b>هشدار انقضای گواهی SSL</b>") . "\n\n"
+                . "🔗 سایت: <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n"
+                . "🗓 انقضا: " . faDay($info['expires'], $tz) . " — " . ($days < 0 ? 'منقضی شده' : faLeft($days * 86400) . ' دیگر') . "\n"
+                . (!empty($info['issuer']) ? "🏛 صادرکننده: " . tgH($info['issuer']) . "\n" : '')
+                . "🎯 آستانهٔ هشدار: " . faNum($warn) . " روز\n\n"
+                . "برای تمدید اقدام کنید وگرنه مرورگرها خطای ناامنی نشان می‌دهند.";
+            foreach (self::notifyTargets($s + ['chat_id' => $s['chat_id'] ?? 0]) as $cid) {
+                tgSend($cid, $text);
+            }
+            Db::logEvent((int)$s['user_id'], 'alert_ssl', (string)$s['target']);
+        }
+
+        // ---------- ۲) انقضای دامنه (WHOIS) ----------
+        $whoisAge = max(1800, Db::getInt('whois_interval', '21600'));
+        try {
+            $domains = Db::all(
+                'SELECT * FROM `domain_watch` WHERE last_check IS NULL OR last_check <= DATE_SUB(NOW(), INTERVAL ' . $whoisAge . ' SECOND) LIMIT 15'
+            );
+        } catch (Throwable $e) {
+            $domains = [];
+        }
+        foreach ($domains as $d) {
+            $info = Domain::whois((string)$d['domain']);
+            $out['domains']++;
+            $status = 'unknown';
+            if (!empty($info['ok'])) $status = $info['expires'] && strtotime((string)$info['expires']) < time() ? 'expired' : 'ok';
+            try {
+                Db::q(
+                    'UPDATE `domain_watch` SET expires_at = ?, registrar = ?, status = ?, last_check = NOW(), last_error = ? WHERE id = ?',
+                    [
+                        $info['expires'],
+                        mb_substr((string)$info['registrar'], 0, 160),
+                        $status,
+                        mb_substr((string)$info['error'], 0, 190),
+                        (int)$d['id'],
+                    ]
+                );
+            } catch (Throwable $e) {
+                continue;
+            }
+            if (empty($info['ok'])) continue;
+            $exp = strtotime((string)$info['expires']);
+            if ($exp === false) continue;
+            $leftDays = (int)floor(($exp - time()) / 86400);
+            $warn = max(1, (int)$d['warn_days']);
+            if ($leftDays > $warn) {
+                // از هشدار قبلی پاک شد
+                Db::q('UPDATE `domain_watch` SET notified_at = NULL, notified_exp = NULL WHERE id = ?', [(int)$d['id']]);
+                continue;
+            }
+            if (!empty($d['notified_at']) && (string)$d['notified_exp'] === (string)$info['expires']) continue;
+            Db::q('UPDATE `domain_watch` SET notified_at = NOW(), notified_exp = ? WHERE id = ?', [(string)$info['expires'], (int)$d['id']]);
+            $text = ($leftDays < 0 ? "🔴 <b>دامنه منقضی شده</b>" : "🟠 <b>هشدار انقضای دامنه</b>") . "\n\n"
+                . "🌐 دامنه: <code>" . tgH((string)$d['domain']) . "</code>\n"
+                . "🗓 انقضا: " . faDay($info['expires'], $tz) . " — " . ($leftDays < 0 ? 'منقضی شده' : faLeft($leftDays * 86400) . ' دیگر') . "\n"
+                . (!empty($info['registrar']) ? "🏛 ثبت‌کننده: " . tgH($info['registrar']) . "\n" : '')
+                . "⚠️ تمدید را فراموش نکنید؛ با انقضای دامنه سایت از دسترس خارج می‌شود.";
+            $targets = Group::isGroupChat((int)$d['chat_id']) ? [(int)$d['chat_id']] : [(int)$d['user_id']];
+            foreach (array_filter(array_unique($targets)) as $cid) tgSend($cid, $text);
+            Db::logEvent((int)$d['user_id'], 'alert_domain', (string)$d['domain']);
+        }
+
+        // ---------- ۳) آمار زمان پاسخ (کش‌شده، برای نمایش سریع) ----------
+        $respAge = max(1800, Db::getInt('resp_interval', '3600'));
+        try {
+            $rows = Db::all(
+                'SELECT * FROM `site` WHERE `paused` = 0
+                   AND (last_check_at IS NOT NULL AND last_check_at <= DATE_SUB(NOW(), INTERVAL ' . $respAge . ' SECOND))
+                  LIMIT 40'
+            );
+        } catch (Throwable $e) {
+            $rows = [];
+        }
+        foreach ($rows as $s) {
+            $st = Stats::responseStats($s);
+            if ($st['n'] < 1) continue;
+            try {
+                Db::q('UPDATE `site` SET resp_avg = ?, resp_max = ?, resp_p95 = ? WHERE id = ?', [$st['avg'], $st['max'], $st['p95'], (int)$s['id']]);
+                $out['resp']++;
+            } catch (Throwable $e) {
+                // بی‌اهمیت
+            }
+        }
+
+        return $out;
     }
 }

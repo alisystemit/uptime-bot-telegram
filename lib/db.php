@@ -1,0 +1,313 @@
+<?php
+/**
+ * ===== لایهٔ دیتابیس ربات مانیتورینگ (MySQL/PDO) =====
+ *
+ * طراحی:
+ *  - boot() با یک کوئری کوچک می‌فهمد جدول‌ها هستند؛ اگر نبودند migrate() اجرا می‌شود.
+ *  - migrate() کاملاً idempotent است (CREATE TABLE IF NOT EXISTS) و هم از طریق
+ *    table.php (نصب صریح) و هم خودکار در اولین درخواست قابل اجراست.
+ *  - همهٔ کوئری‌ها prepared می‌شوند؛ ورودی کاربر هرگز داخل SQL نمی‌نشیند.
+ */
+class Db
+{
+    private static ?PDO $pdo = null;
+    private static bool $booted = false;
+
+    /** کانفیگ بارگذاری‌شده (توسط bootstrap تنظیم می‌شود) */
+    private static array $cfg = [];
+
+    public static function setConfig(array $cfg): void
+    {
+        self::$cfg = $cfg;
+        self::$pdo = null;
+        self::$booted = false;
+    }
+
+    public static function config(): array
+    {
+        return self::$cfg;
+    }
+
+    public static function pdo(): PDO
+    {
+        if (self::$pdo instanceof PDO) return self::$pdo;
+        $db = self::$cfg['db'] ?? [];
+        $host = (string)($db['host'] ?? '127.0.0.1');
+        $port = (int)($db['port'] ?? 3306);
+        $name = (string)($db['name'] ?? '');
+        $dsn = "mysql:host={$host};port={$port}" . ($name !== '' ? ";dbname={$name}" : '') . ';charset=utf8mb4';
+        self::$pdo = new PDO($dsn, (string)($db['user'] ?? ''), (string)($db['pass'] ?? ''), [
+            PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+            PDO::ATTR_EMULATE_PREPARES => false,
+            PDO::ATTR_TIMEOUT => 8,
+        ]);
+        // ساعت جلسه را UTC کن تا NOW()/CURRENT_TIMESTAMP دیتابیس با
+        // date() خودِ PHP (UTC) یکی باشد؛ وگرگ‌شدن ۳٫۵ ساعته پیش می‌آید.
+        try {
+            self::$pdo->exec("SET time_zone = '+00:00'");
+        } catch (Throwable $e) {
+            // بعضی هاست‌ها اجازه نمی‌دهند؛ فقط لاگ کن و ادامه بده
+            @error_log('[uptime] SET time_zone failed: ' . $e->getMessage());
+        }
+        return self::$pdo;
+    }
+
+    /** آماده‌سازی اتصال + جدول‌ها (یک کوئری کوچک؛ فقط در صورت نبود جدول، migrate می‌کند) */
+    public static function boot(): void
+    {
+        if (self::$booted) return;
+        $pdo = self::pdo();
+        try {
+            $pdo->query('SELECT 1 FROM `settings` LIMIT 1');
+        } catch (PDOException $e) {
+            self::migrate();
+        }
+        self::$booted = true;
+    }
+
+    /** ساخت جدول‌ها — امن برای اجرای چندباره */
+    public static function migrate(): void
+    {
+        $pdo = self::pdo();
+        foreach (self::schema() as $sql) $pdo->exec($sql);
+        self::seedDefaults();
+        self::$booted = true;
+    }
+
+    /** آیا جدول‌ها ساخته شده‌اند؟ (برای table.php) */
+    public static function ready(): bool
+    {
+        try {
+            self::pdo()->query('SELECT 1 FROM `settings` LIMIT 1');
+            return true;
+        } catch (Throwable $e) {
+            return false;
+        }
+    }
+
+    private static function schema(): array
+    {
+        $engine = ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_persian_ci';
+        return [
+            // ===== کاربران =====
+            // نام جدول «user» عمداً با ربات‌ساز یکی است تا «پیام همگانی» و «آمار»
+            // ربات‌ساز (childUsers/childCount) روی این قالب هم کار کند.
+            "CREATE TABLE IF NOT EXISTS `user` (
+                `id` BIGINT UNSIGNED NOT NULL,
+                `name` VARCHAR(120) NOT NULL DEFAULT '',
+                `username` VARCHAR(64) NOT NULL DEFAULT '',
+                `is_admin` TINYINT(1) NOT NULL DEFAULT 0,
+                `is_blocked` TINYINT(1) NOT NULL DEFAULT 0,
+                `access` TINYINT(1) NOT NULL DEFAULT 1,
+                `plan` VARCHAR(10) NOT NULL DEFAULT 'free',
+                `plan_until` DATETIME NULL DEFAULT NULL,
+                `notify` TINYINT(1) NOT NULL DEFAULT 1,
+                `paused` TINYINT(1) NOT NULL DEFAULT 0,
+                `paused_since` DATETIME NULL DEFAULT NULL,
+                `paused_total` INT UNSIGNED NOT NULL DEFAULT 0,
+                `share_token` VARCHAR(32) NOT NULL DEFAULT '',
+                `step` VARCHAR(40) NOT NULL DEFAULT 'idle',
+                `temp` TEXT NULL DEFAULT NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `last_seen` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `idx_share` (`share_token`),
+                KEY `idx_access` (`access`)
+            )" . $engine,
+
+            // ===== سایت‌های تحت نظر =====
+            "CREATE TABLE IF NOT EXISTS `site` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `target` VARCHAR(255) NOT NULL,
+                `label` VARCHAR(200) NOT NULL DEFAULT '',
+                `type` VARCHAR(8) NOT NULL DEFAULT 'http',
+                `host` VARCHAR(253) NOT NULL DEFAULT '',
+                `port` SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+                `paused` TINYINT(1) NOT NULL DEFAULT 0,
+                `paused_since` DATETIME NULL DEFAULT NULL,
+                `paused_total` INT UNSIGNED NOT NULL DEFAULT 0,
+                `status` VARCHAR(10) NOT NULL DEFAULT 'unknown',
+                `last_check_at` DATETIME NULL DEFAULT NULL,
+                `last_ms` INT NOT NULL DEFAULT 0,
+                `last_code` SMALLINT NOT NULL DEFAULT 0,
+                `last_error` VARCHAR(190) NOT NULL DEFAULT '',
+                `consecutive_fail` INT NOT NULL DEFAULT 0,
+                `down_alerted` TINYINT(1) NOT NULL DEFAULT 0,
+                `last_alert_at` DATETIME NULL DEFAULT NULL,
+                `last_up_at` DATETIME NULL DEFAULT NULL,
+                `last_down_at` DATETIME NULL DEFAULT NULL,
+                `last_down_duration` INT UNSIGNED NOT NULL DEFAULT 0,
+                `total_checks` INT UNSIGNED NOT NULL DEFAULT 0,
+                `total_fails` INT UNSIGNED NOT NULL DEFAULT 0,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uniq_user_target` (`user_id`, `target`(120)),
+                KEY `idx_due` (`paused`, `last_check_at`),
+                KEY `idx_user` (`user_id`)
+            )" . $engine,
+
+            // ===== لاگ چک‌ها (فقط ۲۴ ساعت اخیر؛ برای نوار تاریخچه و اسپارک‌لاین) =====
+            "CREATE TABLE IF NOT EXISTS `check_log` (
+                `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `site_id` INT UNSIGNED NOT NULL,
+                `ts` DATETIME NOT NULL,
+                `ok` TINYINT(1) NOT NULL DEFAULT 0,
+                `ms` INT NOT NULL DEFAULT 0,
+                `code` SMALLINT NOT NULL DEFAULT 0,
+                `error` VARCHAR(190) NOT NULL DEFAULT '',
+                PRIMARY KEY (`id`),
+                KEY `idx_site_ts` (`site_id`, `ts`)
+            )" . $engine,
+
+            // ===== آپتایم تجمیعی ساعتی (۷/۳۰ روز) =====
+            "CREATE TABLE IF NOT EXISTS `uptime_hour` (
+                `site_id` INT UNSIGNED NOT NULL,
+                `bucket` DATETIME NOT NULL,
+                `checks` INT UNSIGNED NOT NULL DEFAULT 0,
+                `ok` INT UNSIGNED NOT NULL DEFAULT 0,
+                `total_ms` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                PRIMARY KEY (`site_id`, `bucket`),
+                KEY `idx_bucket` (`bucket`)
+            )" . $engine,
+
+            // ===== تنظیمات کلید/مقدار =====
+            "CREATE TABLE IF NOT EXISTS `settings` (
+                `k` VARCHAR(64) NOT NULL,
+                `v` TEXT NULL DEFAULT NULL,
+                PRIMARY KEY (`k`)
+            )" . $engine,
+
+            // ===== کدهای فعال‌سازی =====
+            "CREATE TABLE IF NOT EXISTS `codes` (
+                `code` VARCHAR(32) NOT NULL,
+                `days` INT UNSIGNED NOT NULL DEFAULT 30,
+                `uses` INT UNSIGNED NOT NULL DEFAULT 0,
+                `uses_max` INT UNSIGNED NOT NULL DEFAULT 1,
+                `note` VARCHAR(120) NOT NULL DEFAULT '',
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`code`)
+            )" . $engine,
+
+            // ===== رویدادها (توقف/ادامه، قطعی، پرداخت…) برای آمار =====
+            "CREATE TABLE IF NOT EXISTS `events` (
+                `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `kind` VARCHAR(32) NOT NULL,
+                `detail` VARCHAR(255) NOT NULL DEFAULT '',
+                `ts` DATETIME NOT NULL,
+                PRIMARY KEY (`id`),
+                KEY `idx_kind_ts` (`kind`, `ts`),
+                KEY `idx_user` (`user_id`)
+            )" . $engine,
+
+            // ===== پرداخت‌ها / درخواست‌های اشتراک =====
+            "CREATE TABLE IF NOT EXISTS `payments` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `amount` BIGINT UNSIGNED NOT NULL DEFAULT 0,
+                `status` VARCHAR(10) NOT NULL DEFAULT 'pending',
+                `note` VARCHAR(255) NOT NULL DEFAULT '',
+                `media_file_id` VARCHAR(160) NOT NULL DEFAULT '',
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `decided_at` DATETIME NULL DEFAULT NULL,
+                PRIMARY KEY (`id`),
+                KEY `idx_status` (`status`),
+                KEY `idx_user` (`user_id`)
+            )" . $engine,
+
+            // ===== آپدیت‌های پردازش‌شده (جلوگیری از دوباره‌کاری تلگرام) =====
+            "CREATE TABLE IF NOT EXISTS `seen_update` (
+                `update_id` BIGINT UNSIGNED NOT NULL,
+                `ts` DATETIME NOT NULL,
+                PRIMARY KEY (`update_id`)
+            )" . $engine,
+        ];
+    }
+
+    /** مقادیر پیش‌فرض از config['defaults'] — فقط اگر وجود نداشته باشند */
+    private static function seedDefaults(): void
+    {
+        $defaults = self::$cfg['defaults'] ?? [];
+        foreach ($defaults as $k => $v) {
+            $st = self::pdo()->prepare('INSERT IGNORE INTO `settings` (`k`,`v`) VALUES (?,?)');
+            $st->execute([(string)$k, (string)$v]);
+        }
+    }
+
+    // ---------- ابزارهای کوئری ----------
+
+    public static function q(string $sql, array $params = []): PDOStatement
+    {
+        $st = self::pdo()->prepare($sql);
+        $st->execute($params);
+        return $st;
+    }
+
+    public static function all(string $sql, array $params = []): array
+    {
+        return self::q($sql, $params)->fetchAll();
+    }
+
+    public static function one(string $sql, array $params = []): ?array
+    {
+        $row = self::q($sql, $params)->fetch();
+        return $row === false ? null : $row;
+    }
+
+    public static function val(string $sql, array $params = [], $default = null)
+    {
+        $v = self::q($sql, $params)->fetchColumn();
+        return $v === false ? $default : $v;
+    }
+
+    public static function exec(string $sql, array $params = []): int
+    {
+        return self::q($sql, $params)->rowCount();
+    }
+
+    // ---------- تنظیمات ----------
+
+    public static function get(string $k, ?string $default = null): ?string
+    {
+        $v = self::val('SELECT `v` FROM `settings` WHERE `k` = ?', [$k]);
+        return $v === null ? $default : $v;
+    }
+
+    public static function getInt(string $k, int $default = 0): int
+    {
+        $v = self::get($k);
+        return $v === null || $v === '' ? $default : (int)$v;
+    }
+
+    public static function getBool(string $k, bool $default = false): bool
+    {
+        $v = self::get($k);
+        if ($v === null) return $default;
+        return in_array($v, ['1', 'true', 'yes', 'on'], true);
+    }
+
+    public static function set(string $k, string $v): void
+    {
+        self::q('INSERT INTO `settings` (`k`,`v`) VALUES (?,?) ON DUPLICATE KEY UPDATE `v` = VALUES(`v`)', [$k, $v]);
+    }
+
+    public static function allSettings(): array
+    {
+        $out = [];
+        foreach (self::all('SELECT `k`,`v` FROM `settings`') as $r) $out[$r['k']] = $r['v'];
+        return $out;
+    }
+
+    // ---------- رویدادها ----------
+
+    public static function logEvent(int $userId, string $kind, string $detail = ''): void
+    {
+        try {
+            self::q('INSERT INTO `events` (`user_id`,`kind`,`detail`,`ts`) VALUES (?,?,?,NOW())', [$userId, $kind, mb_substr($detail, 0, 255)]);
+        } catch (Throwable $e) {
+            // ثبت رویداد هرگز نباید مسیر اصلی را بشکند
+        }
+    }
+}

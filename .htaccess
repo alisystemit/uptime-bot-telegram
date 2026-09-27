@@ -1,0 +1,21 @@
+Options -Indexes
+<FilesMatch "(?i)(^\.|^error_log$|^hash\.txt$|^info$|\.(zip|sql|log|env|bak|tmp|err|ya?ml|sh|ini|conf|json|lock)$)">
+    Require all denied
+</FilesMatch>
+
+# منبع/ابزار داخلی ربات قابل دانلود نباشند (lib و cron فقط از طریق PHP اجرا می‌شوند)
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    # دسترسی مستقیم به فایل‌های کتابخانه
+    RewriteRule (^|/)lib/ - [F,L]
+    # لاگ‌ها و قفل‌ها
+    RewriteRule (^|/)logs(/|$) - [F,L]
+    RewriteRule (^|/)error_log$ - [F,L]
+</IfModule>
+
+# این‌ها باید باز بمانند (نقطه‌های ورود وب):
+#   index.php   → وبهوک تلگرام
+#   table.php   → نصب جدول‌ها (با secret)
+#   status.php   → صفحهٔ وضعیت عمومی
+#   api.php     → JSON صفحهٔ وضعیت
+#   cron/*.php  → کرون چک (با secret)

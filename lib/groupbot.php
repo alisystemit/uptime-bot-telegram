@@ -66,12 +66,12 @@ class GroupBot
                 $this->handleStep($text, $st);
                 return;
             }
-            $this->say('⏳ یکی دیگر در حال ثبت مانیتور است؛ کمی صبر کنید یا دستور <code>/cancel</code> را بفرستید.');
+            $this->say('⏳ فرد دیگری در حال ثبت مانیتور است؛ کمی صبر کنید یا دستور <code>/cancel</code> را بفرستید.');
             return;
         }
         if ($text === '/cancel' || $text === '/cancel@' . botUsername() || $text === '❌ انصراف') {
             Group::clearStep($this->chatId);
-            $this->say('انصراف داده شد.');
+            $this->say('❌ انصراف داده شد.');
             return;
         }
 
@@ -198,7 +198,7 @@ class GroupBot
                  VALUES (?,?,?,?,?,?,?,?,?,NOW())',
                 [
                     $userId, $this->chatId, truncateFa($this->chatTitle, 150),
-                    $norm['target'], mb_subtr(($label !== '' ? $label : $norm['label']), 0, 200) ?: $norm['label'],
+                    $norm['target'], mb_substr($label !== '' ? $label : $norm['label'], 0, 200),
                     $norm['type'], $norm['host'], (int)$norm['port'], $token,
                 ]
             );
@@ -366,8 +366,11 @@ class GroupBot
         if ($rest === '') { $this->say("فرمت: <code>/remove #12</code>\nبرای دیدن شناسه‌ها /list را بزنید."); return; }
         $site = $this->pickSite($rest);
         if (!$site) return;
-        if ((string)($this->hub['step'] ?? '') === 'await_del' && (int)($this->hub['step_user'] ?? 0) === $this->uid
-            && (int)($this->hub['temp']['site'] ?? 0) === (int)$site['id']) {
+        // مرحلهٔ تأیید در ردیف chat_hub ذخیره می‌شود (ستون temp یک JSON است)
+        $st = Group::step($this->chatId);
+        if ((string)$st['step'] === 'await_del'
+            && (int)$st['step_user'] === $this->uid
+            && (int)($st['temp']['site'] ?? 0) === (int)$site['id']) {
             Group::clearStep($this->chatId);
             self::purgeSite((int)$site['id']);
             Db::logEvent(0, 'delete_site', (string)$site['target']);
@@ -424,7 +427,7 @@ class GroupBot
             . "این لینک را می‌توانید در سایت یا پیام‌رسان بفرستید تا همه وضعیت زندهٔ مانیتورهای گروه را ببینند.\n\n"
             . "🌐 <code>" . h($url) . "</code>\n\n"
             . "📊 مانیتورها: " . faNum($sum['total']) . " • میانگین ۲۴س: " . faPct($sum['uptime24']) . "\n"
-            . "🔁 بروزرسانی خودکار هر ۲۵ ثانیه");
+            . "🔁 به‌روزرسانی خودکار هر ۲۵ ثانیه");
     }
 
     private function cmdNotify(string $rest): void

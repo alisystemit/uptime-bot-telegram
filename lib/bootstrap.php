@@ -9,7 +9,7 @@ if (!defined('UPTIME_ROOT')) {
 
     /**
      * ذخیره‌سازی زمان همه‌جا UTC است (هم در PHP، هم در دیتابیس — نگاه کن به
-     * Db::pdo که time_zone جلسه را ‎+00:00‎ می‌کند) تا strtotime() روی رشته‌های
+     * Db::pdo که time_zone جلسه را +00:00 می‌کند) تا strtotime() روی رشته‌های
      * دیتابیس همیشه درست باشد. نمایشِ ساعتِ محلی با tz_offset کانفیگ انجام
      * می‌شود (timeAgo / faDateTime).
      */
@@ -22,8 +22,12 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/group.php';
     require_once __DIR__ . '/monitor.php';
     require_once __DIR__ . '/stats.php';
+    require_once __DIR__ . '/gateways.php';
+    require_once __DIR__ . '/pay.php';
+    require_once __DIR__ . '/ranking.php';
     require_once __DIR__ . '/page.php';
     require_once __DIR__ . '/groupbot.php';
+    require_once __DIR__ . '/paybot.php';
     require_once __DIR__ . '/bot.php';
 }
 
@@ -32,7 +36,10 @@ function appConfig(): array
 {
     static $cfg = null;
     if ($cfg === null) {
-        $cfg = require UPTIME_ROOT . '/config.php';
+        // امکان تست/اجرای محلی بدون دست‌زدن به قالب: UPTIME_CONFIG=path/to/config.php
+        $alt = getenv('UPTIME_CONFIG');
+        $file = (is_string($alt) && $alt !== '' && is_file($alt)) ? $alt : UPTIME_ROOT . '/config.php';
+        $cfg = require $file;
         if (!is_array($cfg)) $cfg = [];
         $cfg += ['defaults' => []];
     }

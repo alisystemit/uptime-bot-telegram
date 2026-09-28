@@ -303,7 +303,7 @@ class Domain
     private static function parseRegistrar(string $text): string
     {
         $patterns = [
-            '/^(?:Sponsoring\s+)?Registrar:\s*(.+)$/im',   // verisign،afilias، نیک‌ایر
+            '/^(?:Sponsoring\s+)?Registrar:\s*(.+)$/im',   // verisign، afilias، نیک‌ایر
             '/^Registrant\s+(?:Organisation|Organization):\s*(.+)$/im',
             '/^organisation:\s*(.+)$/im',                    // پاسخ IANA
             '/^organization:\s*(.+)$/im',

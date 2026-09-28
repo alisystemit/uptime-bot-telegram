@@ -45,7 +45,7 @@ class Page
             return [
                 'kind'  => self::KIND_GROUP,
                 'title' => (string)$hub['title'] !== '' ? (string)$hub['title'] : 'مانیتورینگ گروه',
-                'owner' => (string)$hub['chat_type'] === 'channel' ? 'کانال' : 'گروه',
+                'owner' => (string)$hub['chat_type'] === 'channel' ? '📢 کانال' : ((string)$hub['chat_type'] === 'supergroup' ? '👥 گروه سوپر' : '👥 گروه'),
                 'token' => $g,
                 'sites' => $sites,
                 'extra' => ['chat_id' => (int)$hub['chat_id']],

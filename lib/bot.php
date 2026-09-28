@@ -6,6 +6,8 @@
  */
 class Bot
 {
+    use PayUi;
+
     private array $cfg;
     private string $token;
     private ?array $u = null;
@@ -176,7 +178,13 @@ class Bot
         // لینک عمیق: /start site_<token> (دعوت به اشتراک یک مانیتور)
         $p = parseCommand($text);
         if ($p['cmd'] === 'start' && $p['rest'] !== '') {
-            $this->handleStartPayload($p['rest']);
+            $payload = $p['rest'];
+            // بازگشت کاربر از درگاه پرداخت → بررسی فاکتورهای در انتظار
+            if ($payload === 'paycheck') {
+                $this->payCheckAll();
+                return;
+            }
+            $this->handleStartPayload($payload);
             return;
         }
 
@@ -208,6 +216,7 @@ class Bot
                     ['command' => 'start', 'description' => '🏠 منوی اصلی'],
                     ['command' => 'sites', 'description' => '📋 سایت‌های من'],
                     ['command' => 'report', 'description' => '📈 گزارش آپتایم'],
+                    ['command' => 'rank', 'description' => '📊 رنکینگ'],
                     ['command' => 'help', 'description' => 'ℹ️ راهنما'],
                 ]);
                 if (!$this->allowed()) {
@@ -232,9 +241,8 @@ class Bot
                 $this->send($this->rankingText(), $this->rankingMenu());
                 return;
             case '/report':
-            case '📊 رنکینگ':
                 $this->clearStep();
-                $this->send($this->rankingText(), $this->rankingMenu());
+                $this->send($this->reportText(), $this->mainMenu());
                 return;
             case '📈 گزارش من':
                 $this->clearStep();
@@ -376,8 +384,28 @@ class Bot
                 $this->stepAddDomain($text);
                 return true;
 
+            case 'await_paygw': {
+                $t = $this->temp();
+                if (($t['code'] ?? '') === 'generic' && ($t['field'] ?? '') === 'json') {
+                    $this->paySetGenericJson($text);
+                    return true;
+                }
+                $this->stepPayGateway($text);
+                return true;
+            }
+
             case 'await_userop':
                 $this->stepUserOp($text);
+                return true;
+
+            // جایزهٔ دستی امتیاز — فقط از منوی رنکینگِ مدیر فعال می‌شود
+            case 'await_rankgrant':
+                if ($text === '❌ انصراف') {
+                    $this->clearStep();
+                    $this->send('انصراف شد.', Ranking::menu($this->isAdmin()));
+                    return true;
+                }
+                $this->stepRankGrant($text);
                 return true;
         }
         $this->clearStep();
@@ -886,7 +914,7 @@ class Bot
         Db::logEvent($this->uid, 'payment_pending', (string)$payId);
         $this->clearStep();
 
-        tgSend($this->chatId, "✅ درخواست شما ثبت شد و برای بررسی به مدیر ارسال شد.\nپس از تأیید، اشتراک ویژهٔ شما فعال می‌شود.", $this->mainMenu());
+        tgSend($this->chatId, "✅ درخواست شما ثبت شد و برای بررسی به مدیر ارسال شد.\nپس از تأیید، اشتراک ویژهٔ شما فعال می‌شود.", ['reply_markup' => $this->mainMenu()]);
 
         $adminTxt = "🧾 <b>درخواست پرداخت جدید</b>\n\n"
             . "👤 کاربر: " . tgH($this->u['name'] ?? '') . " (<code>{$this->uid}</code>)\n"
@@ -1055,7 +1083,8 @@ class Bot
         $arg = $parts[1] ?? '';
 
         // ---- دسترسی ----
-        $openForRestricted = ['sub', 'menu', 'codein', 'buy', 'help'];
+        // کاربرِ بدون اشتراک هم باید بتواند پرداخت/کد را انجام دهد
+        $openForRestricted = ['sub', 'menu', 'codein', 'buy', 'help', 'gw', 'pcheck', 'porder', 'paysub'];
         if (!$this->allowed() && !in_array($act, $openForRestricted, true)) {
             $this->send("⏳ حساب شما هنوز فعال نشده است.\n\n"
                 . "برای استفاده از ربات، اشتراک ویژه را فعال کنید:\n"
@@ -1083,6 +1112,10 @@ class Bot
             case 'report':
                 $this->edit($msgId, $this->reportText(), $this->mainMenu());
                 return;
+            // ---------- رنکینگ (ماژول Ranking) ----------
+            case 'rank':
+                $this->rankView($msgId, $arg);
+                return;
             case 'share':
                 $this->edit($msgId, $this->shareText(), $this->shareMenu());
                 return;
@@ -1098,17 +1131,8 @@ class Bot
                 $this->setStep('await_code');
                 $this->edit($msgId, "🎟 کد فعال‌سازی را بفرستید:\n\n<code>UP-XXXX-XXXX</code>", BotApi::kb([[['text' => '❌ انصراف']]]));
                 return;
-            case 'buy':
-                $this->setStep('await_payment');
-                $this->edit($msgId,
-                    "💳 <b>پرداخت اشتراک ویژه</b>\n\n"
-                    . "💰 مبلغ: " . faMoney(Db::getInt('price', 0)) . "\n"
-                    . "💳 کارت: <code>" . tgH(Db::get('card', '—')) . "</code>\n"
-                    . "📆 مدت: " . faNum(Db::getInt('vip_days', 30)) . " روز\n\n"
-                    . "پس از انتقال، <b>رسید (عکس یا فایل)</b> را همین‌جا بفرستید تا مدیر بررسی و فعال کند.",
-                    BotApi::kb([[['text' => '❌ انصراف']]])
-                );
-                return;
+            // توجه: case 'buy' در بخش «درگاه‌های پرداخت» پایین‌تر پیاده شده است
+            // تا اگر درگاهی فعال باشد، منوی انتخاب درگاه نشان داده شود.
             case 'tnotify':
                 $cur = (int)$this->u['notify'];
                 Db::q('UPDATE `user` SET `notify` = ? WHERE `id` = ?', [$cur ? 0 : 1, $this->uid]);
@@ -1337,11 +1361,88 @@ class Bot
                 return;
             }
 
+            // ---------- درگاه‌های پرداخت ----------
+            case 'buy':
+                $this->clearStep();
+                if (PayGws::all(true)) {
+                    $this->edit($msgId, $this->payBuyText(), $this->payGatewayMenu());
+                } else {
+                    $this->setStep('await_payment');
+                    $this->edit($msgId,
+                        "💳 <b>پرداخت اشتراک ویژه</b>\n\n"
+                        . "💰 مبلغ: " . faMoney(Db::getInt('price', 0)) . "\n"
+                        . "💳 کارت: <code>" . tgH(Db::get('card', '—')) . "</code>\n"
+                        . "📆 مدت: " . faNum(Db::getInt('vip_days', 30)) . " روز\n\n"
+                        . "پس از انتقال، <b>رسید (عکس یا فایل)</b> را همین‌جا بفرستید تا مدیر بررسی و فعال کند.",
+                        BotApi::kb([[['text' => '❌ انصراف']]])
+                    );
+                }
+                return;
+            case 'gw':
+                $this->payGatewayCreate($arg, $msgId);
+                return;
+            case 'pcheck':
+                $this->payCheck((int)$arg, $msgId);
+                return;
+            case 'porder':
+                $this->edit($msgId, $this->payOrdersText(), BotApi::ikb([
+                    [['text' => '💳 پرداخت جدید', 'callback_data' => 'buy']],
+                    [['text' => '🔙 منو', 'callback_data' => 'menu']],
+                ]));
+                return;
+            case 'pgws_list':
+            case 'pgws2':
+                if (!$this->isAdmin()) return;
+                $this->edit($msgId, $this->adminGatewaysText(), $this->adminGatewaysMenu());
+                return;
+            case 'pgw':
+                if (!$this->isAdmin()) return;
+                $this->edit($msgId, $this->adminGatewayText($arg), $this->adminGatewayMenu($arg));
+                return;
+            case 'pgwt': {
+                if (!$this->isAdmin()) return;
+                $g = PayGws::get($arg);
+                if (!$g) return;
+                $on = (int)$g['enabled'] === 1;
+                if (!PayGws::toggle($arg, !$on)) {
+                    $this->edit($msgId, "⚠️ قبل از روشن کردن باید کلید API این درگاه را وارد کنید.", $this->adminGatewayMenu($arg));
+                    return;
+                }
+                Db::logEvent($this->uid, 'gateway_toggle', $arg . '=' . ($on ? 0 : 1));
+                $this->edit($msgId, ($on ? "🔴 <b>غیرفعال شد</b>.\n\nکاربران دیگر این درگاه را نمی‌بینند." : "🟢 <b>فعال شد</b>.\n\nاین درگاه برای کاربران نمایش داده می‌شود.")
+                    . "\n\n" . $this->adminGatewayText($arg), $this->adminGatewayMenu($arg));
+                return;
+            }
+            case 'pgwk': if (!$this->isAdmin()) return; $this->paySetField($arg, 'api_key'); return;
+            case 'pgwm': if (!$this->isAdmin()) return; $this->paySetField($arg, 'merchant_id'); return;
+            case 'pgws': if (!$this->isAdmin()) return; $this->paySetField($arg, 'secret'); return;
+            case 'pgwb': if (!$this->isAdmin()) return; $this->paySetField($arg, 'base_url'); return;
+            case 'pgwg':
+                if (!$this->isAdmin()) return;
+                $this->setStep('await_paygw', ['code' => 'generic', 'field' => 'json']);
+                $this->edit($msgId, "🧩 <b>تنظیمات درگاه دلخواه</b>\n\n"
+                    . "یک JSON معتبر بفرستید. کلیدهای پشتیبانی‌شده:\n"
+                    . "<code>create_path</code> مسیر ساخت فاکتور\n"
+                    . "<code>verify_path</code> مسیر تأیید (اگر خالی باشد فقط وب‌هوک ملاک است)\n"
+                    . "<code>ref_path</code> نام فیلد شناسه در پاسخ\n"
+                    . "<code>url_path</code> نام فیلد لینک پرداخت در پاسخ\n"
+                    . "<code>status_path</code> نام فیلد وضعیت\n"
+                    . "<code>ok_values</code> آرایهٔ وضعیت‌های موفق\n"
+                    . "<code>field_map</code> نگاشت فیلدها (مقدارهای مجاز: amount، order، callback، desc، user، email)\n"
+                    . "<code>auth_style</code> bearer | header | query | body\n"
+                    . "<code>sign_algo</code> مثلاً sha256 برای بررسی امضای وب‌هوک\n\n"
+                    . "فعلی: <code>" . tgH(mb_substr((string)(PayGws::get('generic')['settings'] ?? ''), 0, 200)) . "</code>",
+                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                return;
+            case 'pgwx':
+                if (!$this->isAdmin()) return;
+                $this->payGatewayTest($arg, $msgId);
+                return;
+
             // ---------- دامنه‌ها ----------
             case 'domains':
                 $this->edit($msgId, $this->domainText(), $this->domainMenu());
-                return;
-            case 'dadd':
+                return;            case 'dadd':
                 $this->setStep('await_domain');
                 $this->edit($msgId, "🌐 <b>افزودن دامنه</b>\n\n"
                     . "نام دامنه را بفرستید (بدون https و بدون مسیر):\n<code>example.ir</code>\n\n"
@@ -1803,81 +1904,114 @@ class Bot
             . "⚠️ هرکسی لینک نمایشی را داشته باشد می‌تواند سایت‌ها را ببیند؛ با «🔄 تغییر لینک» لینک قبلی را باطل می‌کنید.";
     }
 
+    /**
+     * کارت «رتبهٔ من» — فقط نمای شخصی؛ جدول امتیاز در rankView() جداگانه است.
+     * همهٔ محاسبات در ماژول Ranking (lib/ranking.php) متمرکز شده تا با
+     * موتور چک (Monitor::record) هم‌خوان بماند و امتیاز دوبار توزیع نشود.
+     */
     private function rankingText(): string
     {
-        $userPoints = $this->u['user_points'] ?? 0;
-        $userRank = $this->u['user_rank'] ?? 1;
-        $maxSites = $this->maxSites();
-        $sites = Db::all('SELECT * FROM `site` WHERE `user_id` = ? AND `paused` = 0', [$this->uid]);
-        $activeSites = count(array_filter($sites, fn($s) => ($s['status'] ?? 'unknown') === 'up'));
-        $totalSites = count($sites);
-        
-        // Get ranking configuration
-        $rankingInterval = Db::getInt('ranking_interval', 60);
-        $pointsPerDay = Db::getInt('points_per_day', 1);
-        $pointsPerUptimeHour = Db::getInt('points_per_uptime_hour', 5);
-        
-        // Calculate next point award time
-        $today = date('Y-m-d');
-        $lastAwarded = Db::val("SELECT `v` FROM `settings` WHERE `k` = 'last_points_{$this->uid}_{$today}'");
-        $daysSinceAward = (int)$lastAwarded > 0 ? max(0, (time() - strtotime($lastAwarded)) / 86400) : 1;
-        
-        $txt = "📊 <b>رنکینگuptime-bot</b>\n\n"
-            . "🏅 <b>امتیازات شما:</b>\n"
-            . "   - امتیاز جاری: {$userPoints}\n"
-            . "   - سطح رتبه: {$userRank}\n"
-            . "   - سایت‌های فعال: {$activeSites} از {$totalSites}\n\n"
-            . "⚙️ <b>تنظیمات امتیازNosانی:</b>\n"
-            . "   - بازه Premio: {$rankingInterval} دقیقه\n"
-            . "   - امتیاز روزانه: {$pointsPerDay} امتیاز\n"
-            . "   - بونوس uptime ساعت: {$pointsPerUptimeHour} امتیاز\n\n";
-        
-        // Calculate progress to next rank
-        $pointsToNextRank = max(0, (($userRank * 100) + 100) - $userPoints);
-        $txt .= "📈 <b>進度 به رتبه بعدی:</b> {$pointsToNextRank} امتیاز بیشتر نیاز دارد\n\n";
-        
-        // Show site details
-        $txt .= "🌐 <b>جزئیات سایت‌ها:</b>\n"
-            . "   - کل سایت‌ها: {$totalSites}\n"
-            . "   - فعال: 🟢 {$activeSites}\n"
-            . "   - قطعی: 🔴 " . (($totalSites - $activeSites > 0 ? faNum($totalSites - $activeSites) : '0') ) . "\n\n";
-        
-        // Award status
-        if ((int)$lastAwarded < strtotime($today)) {
-            $txt .= "💡 <b>امتیاز روزانه:</b> هنوز دریافت نشده است.\n";
-            $txt .= "برای دریافت روزانه، منتظر چک‌های خودکار بمانید یا ادمین را تماس بگیرید.\n\n";
-        } else {
-            $txt .= "✅ <b>امتیاز روزانه:</b> امروز دریافت کردید.\n\n";
-        }
-        
-        // Rank benefits
-        $txt .= "🎖 <b>مزایا بر اساس رتبه:</b>\n";
-        if ($userRank >= 5) {
-            $txt .= "   - اولویت در پشتیبانی\n";
-            $txt .= "   - حداکثر 10 سایت\n";
-        }
-        if ($userRank >= 3) {
-            $txt .= "   - آمار részیلی\n";
-        }
-        if ($userRank >= 1) {
-            $txt .= "   - حمایت básicos\n";
-        }
-        
-        return $txt;
+        return Ranking::meText($this->u, $this->uid);
     }
 
+    /** منوی رنکینگ — دکمه‌ها callback_data دارند تا واقعاً قابل فشردن باشند */
     private function rankingMenu(): string
     {
-        $isAdmin = $this->isAdmin();
-        $rows = [
-            [['text' => '📊 رتبه من'], ['text' => '👥 Leaderboard (ادمین)']],
-            [['text' => '💡 نحوه امتیازNosانی'], ['text' => '📅 تاریخچه獲得']],
-        ];
-        if ($isAdmin) {
-            $rows[] = [['text' => '⚙️ تنظیمات رنکینگ'], ['text' => '📊 آمارanking']];
+        return Ranking::menu($this->isAdmin());
+    }
+
+    /**
+     * مسیر دکمه‌های رنکینگ: rank:top | rank:me | rank:how | rank:cfg
+     * @param int    $msgId شناسهٔ پیامِ در حال ویرایش
+     * @param string $sub   زیرعمل
+     */
+    private function rankView(int $msgId, string $sub): void
+    {
+        switch ($sub) {
+            case 'me':
+                $this->edit($msgId, $this->rankingText(), Ranking::menu($this->isAdmin()));
+                return;
+
+            case 'how':
+                $this->edit($msgId, Ranking::howText(), Ranking::menu($this->isAdmin()));
+                return;
+
+            case 'cfg':
+                if (!$this->isAdmin()) {
+                    $this->edit($msgId, '⛔️ این بخش فقط برای مدیر است.', $this->mainMenu());
+                    return;
+                }
+                $this->edit($msgId, Ranking::cfgText(), Ranking::menu(true));
+                return;
+
+            // دستورهای مدیریتی از دل همان منوی رنکینگ
+            case 'grant':
+            case 'reset':
+                if (!$this->isAdmin()) {
+                    $this->edit($msgId, '⛔️ این بخش فقط برای مدیر است.', $this->mainMenu());
+                    return;
+                }
+                if ($sub === 'reset') {
+                    $n = Ranking::reset();
+                    $this->edit($msgId, "🔄 امتیاز " . faNum($n) . " کاربر صفر شد.", Ranking::menu(true));
+                    return;
+                }
+                $this->setStep('await_rankgrant');
+                $this->edit($msgId,
+                    "🎁 <b>جایزهٔ دستی</b>\n\nشناسهٔ کاربر و مقدار امتیاز را با فاصله بفرستید:\n<code>123456 50</code>",
+                    BotApi::kb([[['text' => '❌ انصراف', 'callback_data' => 'rank:top']]]));
+                return;
+
+            case 'top':
+            default:
+                // هر دو نسخه: جدول برترین‌ها؛ برای مدیر، فهرست دستورها هم پایین آن می‌آید
+                $this->edit($msgId, Ranking::leaderboardText(20, $this->isAdmin(), $this->uid),
+                    Ranking::menu($this->isAdmin()));
+                return;
         }
-        $rows[] = [['text' => '🔙 منو'], ['text' => 'ℹ️ راهنما']];
-        return BotApi::kb($rows);
+    }
+
+    /**
+     * پردازش ورودی «جایزهٔ دستی امتیاز» از طرف مدیر.
+     * قالب مورد انتظار: «<شناسهٔ کاربر> <مقدار امتیاز>»
+     */
+    private function stepRankGrant(string $text): void
+    {
+        $this->clearStep();
+        $this->send($this->doRankGrant($text), Ranking::menu($this->isAdmin()));
+    }
+
+    /** اجرای جایزهٔ دستی و ساخت متن نتیجه (فارسی، بدون اعداد لاتین) */
+    private function doRankGrant(string $text): string
+    {
+        if (!preg_match('/^(\d+)\s+(-?\d+)$/', trim($text), $m)) {
+            return "❌ قالب درست نیست.\n\nدرست به این شکل بفرستید:\n<code>123456 50</code>\n\n"
+                . "▫️ عدد اول = شناسهٔ کاربر\n▫️ عدد دوم = مقدار امتیاز (منفی هم مجاز است)";
+        }
+        $targetId = (int)$m[1];
+        $points = (int)$m[2];
+
+        if ($points === 0) return '⚠️ مقدار امتیاز نمی‌تواند صفر باشد.';
+        if (abs($points) > 100000) return '⚠️ مقدار امتیاز بیش از حد مجاز است (حداکثر ۱۰۰۰۰۰).';
+
+        $exists = Db::val('SELECT `name` FROM `user` WHERE `id` = ?', [$targetId]);
+        if ($exists === null || $exists === '') {
+            return '❌ کاربری با شناسهٔ ' . faNum($targetId) . ' پیدا نشد.';
+        }
+        if (!Ranking::grant($targetId, $points, 'جایزهٔ دستی توسط مدیر')) {
+            return '❌ اعطای امتیاز انجام نشد؛ لاگ را بررسی کنید.';
+        }
+
+        $after = (int)Db::val('SELECT `user_points` FROM `user` WHERE `id` = ?', [$targetId]);
+        $level = Ranking::level($after);
+        $who = trim((string)$exists) !== '' ? tgH((string)$exists) : faNum($targetId);
+
+        $sign = $points > 0 ? '+' : '';
+        return "✅ <b>امتیاز اعطا شد</b>\n\n"
+            . "👤 کاربر: {$who} (<code>" . faNum($targetId) . "</code>)\n"
+            . "🏅 امتیاز: " . faNum($sign . $points) . "\n"
+            . "📊 مجموع جدید: " . faNum($after) . "\n"
+            . "🎖 سطح: " . faNum($level) . "\n";
     }
 
     private function subText(): string
@@ -1952,7 +2086,7 @@ class Bot
             . "▫️ آخرین ادامه: " . ($p['last_resume'] ? timeAgo($p['last_resume'], tzOffset()) : '—') . "\n\n"
             . "<b>💰 اشتراک</b>\n"
             . "▫️ حالت: " . ['open' => 'باز', 'code' => 'کد فعال‌سازی', 'paid' => 'پرداخت'][Db::get('access_mode', 'open')] . "\n"
-            . "▫️ پرداخت‌های در انتظار: " . faNum($o['payments_pending']) . " • کدهای بدون مصرف: " . faNum($o['codes_unused'])
+            . "▫️ پرداخت‌های در انتظار: " . faNum($o['payments_pending']) . " • کدهای بدون مصرف: " . faNum($o['codes_unused']) . "\n\n"
             . "<b>👥 گروه‌ها و کانال‌ها</b>\n"
             . "▫️ گروه: " . faNum((int)Db::val("SELECT COUNT(*) FROM `chat_hub` WHERE `chat_type` <> 'channel'"))
             . " • کانال: " . faNum((int)Db::val("SELECT COUNT(*) FROM `chat_hub` WHERE `chat_type` = 'channel'")) . "\n"
@@ -2100,7 +2234,8 @@ class Bot
              ['text' => '🗣 منشن در گروه', 'callback_data' => 'set:group_mention']],
             [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک', 'callback_data' => Db::getBool('pause_all', false) ? 'resume' : 'pause']],
             [['text' => '🎟 کدهای فعال‌سازی', 'callback_data' => 'codes'], ['text' => '📊 آمار', 'callback_data' => 'astats']],
-            [['text' => '📣 همگانی', 'callback_data' => 'abroadcast'], ['text' => '⏰ کرون چک', 'callback_data' => 'cron']],
+            [['text' => '🏦 درگاه‌های پرداخت', 'callback_data' => 'pgws_list'], ['text' => '⏰ کرون چک', 'callback_data' => 'cron']],
+            [['text' => '📣 همگانی', 'callback_data' => 'abroadcast'], ['text' => '💳 پرداخت‌های در انتظار', 'callback_data' => 'apays']],
             [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
         ]);
     }
@@ -2167,9 +2302,11 @@ class Bot
     private function subMenu(): string
     {
         $mode = Db::get('access_mode', 'open');
+        $gws = PayGws::all(true);
         $rows = [];
-        if ($mode === 'paid') $rows[] = [['text' => '💳 پرداخت و فعال‌سازی', 'callback_data' => 'buy']];
-        if ($mode !== 'open') $rows[] = [['text' => '🎟 ورود کد فعال‌سازی', 'callback_data' => 'codein']];
+        // اگر درگاهی فعال باشد، «پرداخت» مستقل از access_mode هم باز است
+        if ($mode === 'paid' || $gws) $rows[] = [['text' => '💳 پرداخت آنلاین', 'callback_data' => 'buy']];
+        if ($mode !== 'open' || $gws) $rows[] = [['text' => '🎟 ورود کد فعال‌سازی', 'callback_data' => 'codein']];
         $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }

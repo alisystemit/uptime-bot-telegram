@@ -92,7 +92,7 @@ class Monitor
 
             $stats = ['total' => count($sites), 'up' => 0, 'down' => 0, 'alerts' => 0, 'ms' => 0];
             foreach ($sites as $s) {
-                $res = $results[(int)$s['id']] ?? ['ok' => false, 'ms' => 0, 'code' => 0, 'error' => 'timeout: بررسی تمام نشد'];
+                $res = $results[(int)$s['id']] ?? ['ok' => false, 'ms' => 0, 'code' => 0, 'error' => 'بررسی تمام نشد (Timeout)'];
                 self::record($s, $res, $stats, $roundTs);
             }
 
@@ -229,7 +229,7 @@ class Monitor
             $truncated = (bool)$item['buf']->trunc;
 
             if ($code > 0) {
-                // سرور جواب داده است؛ فقط خطای ۵xx یعنی سرویس از کار افتاده
+                // سرور جواب داده است؛ فقط خطای سری ۵۰۰ یعنی سرویس از کار افتاده
                 $ok = $code < 500;
                 $res = [
                     'ok' => $ok,
@@ -387,9 +387,15 @@ class Monitor
             $stderr = @stream_get_contents($pr['pipes'][2]);
             foreach ($pr['pipes'] as $p) { if (is_resource($p)) @fclose($p); }
             $st = @proc_get_status($pr['proc']);
-            $exit = is_array($st) && array_key_exists('exitcode', $st) && (int)$st['exitcode'] !== -1
-                ? (int)$st['exitcode']
-                : @proc_close($pr['proc']);
+            $closed = false;
+            if (is_array($st) && array_key_exists('exitcode', $st) && (int)$st['exitcode'] !== -1) {
+                // کد خروج قبلاً توسط proc_get_status گرفته شده
+                $exit = (int)$st['exitcode'];
+            } else {
+                // proc_get_status آخرین بار کد خروج را -1 داد → فقط proc_close آن را می‌دهد
+                $exit = (int)@proc_close($pr['proc']);
+                $closed = true;
+            }
             $outText = $stdout . "\n" . $stderr;
             $elapsed = (int)round((microtime(true) - $pr['start']) * 1000);
 
@@ -409,7 +415,7 @@ class Monitor
                 'error' => $ok ? '' : 'پینگ بدون پاسخ (Timeout / 100% loss)',
                 'detail' => 'ICMP',
             ];
-            if (!is_resource($st['resource'] ?? null)) @proc_close($pr['proc']);
+            if (!$closed) @proc_close($pr['proc']);
         }
         return $out;
     }
@@ -526,50 +532,14 @@ class Monitor
             Db::q($sql, array_merge(array_values($set), [$id]));
         } catch (Throwable $e) { /* لاگ در botapi انجام می‌شود */ }
 
-        // ---- سیستم امتیازNosانی (Ranking Points) ----
-        try {
-            $pointsPerUptimeHour = Db::getInt('points_per_uptime_hour', 5);
-            $pointsPerDay = Db::getInt('points_per_day', 1);
-            $rankingInterval = Db::getInt('ranking_interval', 60);
-            
-            // Award points if site is up
-            if ($ok) {
-                // Check if user should get daily points
-                $user = Db::one('SELECT * FROM `user` WHERE `id` = ?', [$site['user_id']]);
-                if ($user) {
-                    $today = date('Y-m-d');
-                    $pointsKey = "last_points_{$site['user_id']}_{$today}";
-                    $lastAwarded = Db::val("SELECT `v` FROM `settings` WHERE `k` = ?", [$pointsKey]);
+        // ---- سیستم امتیازدهی ----
+        // منطق کامل به ماژول Ranking (lib/ranking.php) منتقل شد.
+        // قبلاً اینجا پاداش آپتایم از بازهٔ ۲۴ ساعتهٔ اخیر محاسبه می‌شد؛ اگر
+        // گارد ساعتی نمی‌بود هر راند دوباره پرداخت می‌شد و اگر بود، هر ساعت
+        // کلِ ۲۴ ساعتِ اخیر را یک‌جا می‌پرداخت. حالا هر جایزه با کلیدِ
+        // تاریخ/ساعتِ خودش دقیقاً یک‌بار و به‌صورت اتمیک اعطا می‌شود.
+        if ($ok) Ranking::onCheck($site, true);
 
-                    // Award daily points if not awarded today
-                    if ((int)$lastAwarded < strtotime($today)) {
-                        $newPoints = (($user['user_points'] ?? 0) + $pointsPerDay);
-                        $newRank = min(10, max(1, 1 + floor($newPoints / 100)));
-                        Db::q("UPDATE `user` SET `user_points` = ?, `user_rank` = ? WHERE `id` = ?", [$newPoints, $newRank, $site['user_id']]);
-                        Db::q("INSERT INTO `settings` (`k`,`v`) VALUES (?,?) ON DUPLICATE KEY UPDATE `v` = VALUES(`v`)", [$pointsKey, date('Y-m-d')]);
-                        
-                        // Log the event
-                        Db::logEvent($site['user_id'], 'daily_points', "{$pointsPerDay} points awarded");
-                    }
-                    
-                    // Award uptime bonus hours
-                    $uptimeHours = Db::val("SELECT COALESCE(SUM(`checks`),0)/60 FROM `uptime_hour` WHERE `site_id` = ? AND `bucket` >= DATE_SUB(NOW(), INTERVAL 24 HOUR)", [$site['id']]);
-                    if ($uptimeHours > 0 && $uptimeHours >= 1) {
-                        $bonusPoints = floor($uptimeHours) * $pointsPerUptimeHour;
-                        if ($bonusPoints > 0) {
-                            $newPoints = (($user['user_points'] ?? 0) + $bonusPoints);
-                            $newRank = min(10, max(1, 1 + floor($newPoints / 100)));
-                            Db::q("UPDATE `user` SET `user_points` = ?, `user_rank` = ? WHERE `id` = ?", [$newPoints, $newRank, $site['user_id']]);
-                            Db::logEvent($site['user_id'], 'uptime_bonus', "{$bonusPoints} points from {$uptimeHours}h uptime");
-                        }
-                    }
-                }
-            }
-        } catch (Throwable $e) {
-            // Points system should not break the main check
-            uptimeLog('error', 'Ranking points system error: ' . $e->getMessage());
-        }
-        
         if ($ok) $stats['up']++; else $stats['down']++;
         $stats['ms'] += $ms;
 
@@ -718,9 +688,10 @@ class Monitor
      *   ۱) تازه‌سازی گواهی SSL سایت‌های HTTPS
      *   ۲) استعلام WHOIS دامنه‌های پایش‌شده
      *   ۳) آمار زمان پاسخ ۲۴ ساعت (کمینه/میانگین/صدک۹۵/بیشینه)
+     *   ۴) علامت‌زدن فاکتورهای پرداخت منقضی‌شده
      *
      * @param bool $force اجرای اجباری (حالت CLI)
-     * @return array{ssl:int, domains:int, resp:int}
+     * @return array{ssl:int, domains:int, resp:int, payments?:int}
      */
     public static function maintenance(bool $force = false): array
     {
@@ -736,10 +707,15 @@ class Monitor
         // ---------- ۱) گواهی SSL ----------
         $sslAge = max(600, Db::getInt('ssl_interval', '3600'));
         try {
+            // JOIN با user لازم است تا user_notify بیاید؛ بدون آن، notifyTargets
+            // با مقدار پیش‌فرضِ ۱ همهٔ پیام‌ها را می‌فرستاد و خاموش‌کردنِ
+            // اعلان خصوصی توسط کاربر برای هشدار SSL نادیده گرفته می‌شد.
             $https = Db::all(
-                "SELECT * FROM `site`
-                  WHERE `type` = 'http' AND `target` LIKE 'https://%' AND `paused` = 0
-                    AND (ssl_check_at IS NULL OR ssl_check_at <= DATE_SUB(NOW(), INTERVAL " . $sslAge . " SECOND))
+                "SELECT s.*, u.notify AS user_notify
+                   FROM `site` s
+                   JOIN `user` u ON u.id = s.user_id
+                  WHERE s.type = 'http' AND s.target LIKE 'https://%' AND s.paused = 0
+                    AND (s.ssl_check_at IS NULL OR s.ssl_check_at <= DATE_SUB(NOW(), INTERVAL " . $sslAge . " SECOND))
                   LIMIT 40"
             );
         } catch (Throwable $e) {
@@ -773,6 +749,8 @@ class Monitor
             // فقط یک‌بار برای هر تاریخ انقضا هشدار بده
             $stamp = (string)($info['expires'] ?? '');
             if ((string)$s['ssl_notified'] === $stamp) continue;
+            // کلید سراسریِ خاموشی اعلان‌ها باید اینجا هم رعایت شود
+            if (!Db::getBool('notify', true)) continue;
             Db::q('UPDATE `site` SET ssl_notified = ? WHERE id = ?', [mb_substr($stamp, 0, 40), (int)$s['id']]);
             $text = ($days <= 0 ? "🔴 <b>گواهی SSL منقضی شده</b>" : "🟠 <b>هشدار انقضای گواهی SSL</b>") . "\n\n"
                 . "🔗 سایت: <code>" . tgH($s['label'] ?: $s['target']) . "</code>\n"
@@ -780,7 +758,7 @@ class Monitor
                 . (!empty($info['issuer']) ? "🏛 صادرکننده: " . tgH($info['issuer']) . "\n" : '')
                 . "🎯 آستانهٔ هشدار: " . faNum($warn) . " روز\n\n"
                 . "برای تمدید اقدام کنید وگرنه مرورگرها خطای ناامنی نشان می‌دهند.";
-            foreach (self::notifyTargets($s + ['chat_id' => $s['chat_id'] ?? 0]) as $cid) {
+            foreach (self::notifyTargets($s) as $cid) {
                 tgSend($cid, $text);
             }
             Db::logEvent((int)$s['user_id'], 'alert_ssl', (string)$s['target']);
@@ -820,11 +798,15 @@ class Monitor
             $leftDays = (int)floor(($exp - time()) / 86400);
             $warn = max(1, (int)$d['warn_days']);
             if ($leftDays > $warn) {
-                // از هشدار قبلی پاک شد
-                Db::q('UPDATE `domain_watch` SET notified_at = NULL, notified_exp = NULL WHERE id = ?', [(int)$d['id']]);
+                // از هشدار قبلی پاک شد — فقط اگر چیزی برای پاک‌کردن باشد
+                // (قبلاً هر ۳۰ دقیقه برای هر دامنهٔ سالم یک UPDATE بیهوده می‌زد)
+                if (!empty($d['notified_at']) || !empty($d['notified_exp'])) {
+                    Db::q('UPDATE `domain_watch` SET notified_at = NULL, notified_exp = NULL WHERE id = ?', [(int)$d['id']]);
+                }
                 continue;
             }
             if (!empty($d['notified_at']) && (string)$d['notified_exp'] === (string)$info['expires']) continue;
+            if (!Db::getBool('notify', true)) continue;
             Db::q('UPDATE `domain_watch` SET notified_at = NOW(), notified_exp = ? WHERE id = ?', [(string)$info['expires'], (int)$d['id']]);
             $text = ($leftDays < 0 ? "🔴 <b>دامنه منقضی شده</b>" : "🟠 <b>هشدار انقضای دامنه</b>") . "\n\n"
                 . "🌐 دامنه: <code>" . tgH((string)$d['domain']) . "</code>\n"
@@ -856,6 +838,36 @@ class Monitor
             } catch (Throwable $e) {
                 // بی‌اهمیت
             }
+        }
+
+        // ---------- ۴) فاکتورهای پرداخت منقضی ----------
+        try {
+            $out['payments'] = Pay::expireOld(false);
+        } catch (Throwable $e) {
+            $out['payments'] = 0;
+        }
+
+        // ---------- ۵) پاک‌سازی کلیدهای نگه‌بانِ امتیاز ----------
+        // بدون این، جدول settings برای هر سایت/روز یک سطرِ زائد تا ابد نگه می‌دارد.
+        // کلیدها دو شکل‌اند؛ پس تاریخ را از «پس از آخرین _» می‌خوانیم:
+        //   rank_day_<uid>_<YYYY-MM-DD>          rank_up_<site>_<YYYY-MM-DDTHH>
+        //   last_points_<uid>_<YYYY-MM-DD>       points_bonus_<site>_<YYYYMMDDHH>
+        // نکته: مقدارِ این کلیدها «تعداد امتیاز» است نه تاریخ؛ پس نمی‌شود با
+        // مقایسهٔ مقدار سن‌شان را سنجید و باید از خودِ کلید خوانده شود.
+        try {
+            Db::exec("DELETE FROM `settings`
+                       WHERE (`k` LIKE 'rank\\_day\\_%' OR `k` LIKE 'rank\\_up\\_%'
+                              OR `k` LIKE 'last\\_points\\_%' OR `k` LIKE 'points\\_bonus\\_%')
+                         AND (
+                              (SUBSTRING_INDEX(`k`, '_', -1) LIKE '%-%'
+                               AND LEFT(SUBSTRING_INDEX(`k`, '_', -1), 10)
+                                   < DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 2 DAY), '%Y-%m-%d'))
+                           OR (SUBSTRING_INDEX(`k`, '_', -1) NOT LIKE '%-%'
+                               AND SUBSTRING_INDEX(`k`, '_', -1)
+                                   < DATE_FORMAT(DATE_SUB(NOW(), INTERVAL 2 DAY), '%Y%m%d%H'))
+                         )");
+        } catch (Throwable $e) {
+            // بی‌اهمیت
         }
 
         return $out;

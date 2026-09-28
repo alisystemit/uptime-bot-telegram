@@ -459,7 +459,7 @@ ul.inc .why{width:100%;color:#8ea1c4;direction:ltr;text-align:right;font-size:12
   </div>
 
   <div class="foot">
-    <span class="live"><i></i> بروزرسانی خودکار هر ۲۵ ثانیه</span>
+    <span class="live"><i></i> به‌روزرسانی خودکار هر ۲۵ ثانیه</span>
     <span>آخرین به‌روزرسانی: <b id="updated"><?= h($updated) ?></b></span>
     <a href="<?= h($base . '/status.php?' . $scopeQ . '&csv=1') ?>">⬇️ خروجی CSV</a>
     <span>قدرت‌گرفته از ربات مانیتورینگ 🤖</span>
@@ -470,7 +470,9 @@ ul.inc .why{width:100%;color:#8ea1c4;direction:ltr;text-align:right;font-size:12
 <script>
 (function () {
   var SCOPE = <?= json_encode($scopeQ, JSON_UNESCAPED_SLASHES) ?>;
-  var API   = <?= json_encode($base . '/api.php', JSON_UNESCAPED_SLASHES) ?>;
+  // آدرس نسبی: اگر صفحه با IP یا دامنهٔ دیگری باز شود هم به‌روزرسانی زنده کار کند
+  // و مشکل CORS پیش نیاید.
+  var API   = 'api.php';
   var TICK  = 25000;      // هر ۲۵ ثانیه داده تازه می‌شود
   var RELOAD_EVERY = 6;   // هر ۲٫۵ دقیقه شارژ کامل (نمودارها و مانیتورهای تازه)
   var n = 0;

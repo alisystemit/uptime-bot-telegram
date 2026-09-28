@@ -11,11 +11,14 @@ Options -Indexes
     # لاگ‌ها و قفل‌ها
     RewriteRule (^|/)logs(/|$) - [F,L]
     RewriteRule (^|/)error_log$ - [F,L]
+    # مجموعهٔ تست (سرور قلابی درگاه، بنچمارک، تست‌ها)
+    RewriteRule (^|/)tests/ - [F,L]
 </IfModule>
 
 # این‌ها باید باز بمانند (نقطه‌های ورود وب):
 #   index.php   → وبهوک تلگرام
 #   table.php   → نصب جدول‌ها (با secret)
-#   status.php   → صفحهٔ وضعیت عمومی
+#   status.php  → صفحهٔ وضعیت عمومی
 #   api.php     → JSON صفحهٔ وضعیت
+#   pay.php     → بازگشت خریدار و وب‌هوک درگاه‌های پرداخت
 #   cron/*.php  → کرون چک (با secret)

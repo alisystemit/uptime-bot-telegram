@@ -124,7 +124,7 @@ function normalizeTarget(string $input): array
         if (!empty($p['query'])) $url .= '?' . $p['query'];
         return [
             'ok' => true, 'type' => 'http', 'host' => $host, 'port' => $port ?: ($scheme === 'https' ? 443 : 80),
-            'url' => $url, 'label' => $host . ($p['path'] ?? '' !== '/' ? ($p['path'] ?? '') : ''), 'target' => $url,
+            'url' => $url, 'label' => $host . (('' === ($p['path'] ?? '') || ($p['path'] ?? '') === '/') ? '' : ($p['path'] ?? '')), 'target' => $url,
         ];
     }
 

@@ -1,0 +1,15 @@
+# لاگ و قفل runtime
+logs/
+*.lock
+
+# کانفیگ واقعی (قالب config.php را نگه دارید، نه کلیدهای واقعی)
+config.local.php
+
+# وضعیت سرور قلابی درگاه‌های پرداخت (تست)
+tests/.mock_state.json
+
+# سیستمی
+.DS_Store
+Thumbs.db
+*.tmp
+*.bak

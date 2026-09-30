@@ -426,11 +426,15 @@ else
           fi
         else warn "unsupported package manager $(pkg_mgr) for mariadb auto-install"; fi
       fi
-      # retry up to 30s for MySQL to start
-      for i in $(seq 1 30); do
-        if mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping 2>/dev/null; then break; fi
-        sleep 1
-      done
+      # retry up to 30s for MySQL to start (skip if mysqladmin missing)
+      if have mysqladmin; then
+        for i in $(seq 1 30 2>/dev/null || echo 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15); do
+          if mysqladmin -h "$DB_HOST" -P "$DB_PORT" ping 2>/dev/null; then break; fi
+          sleep 1
+        done
+      else
+        sleep 2
+      fi
     fi
   fi
   # 4b) create db+user if possible (idempotent, safe-quoted via mysql client)
@@ -440,7 +444,14 @@ else
     ESC_PASS="$(printf "%s" "$DB_PASS" | sed "s/'/''/g" 2>/dev/null || printf "%s" "$DB_PASS")"
     if ! mysql_exec "CREATE DATABASE IF NOT EXISTS \`$SAFE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$ESC_PASS'; CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$DB_USER'@'%'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"; then
       warn "auto-create DB failed (no root? remote host?) — assuming DB/user already exist"
-    else ok "database/user ensured"; fi
+    else
+      ok "database/user ensured"
+      # user may pre-exist with a different password (CREATE ... IF NOT EXISTS
+      # does not rotate it) — sync password so app credentials work. Warn-only.
+      if ! mysql_exec "ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$ESC_PASS'; ALTER USER '$DB_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; FLUSH PRIVILEGES;"; then
+        warn "password sync skipped (old MySQL/MariaDB without ALTER USER?) — continuing"
+      fi
+    fi
   else
     if ! mysql_exec "CREATE DATABASE IF NOT EXISTS \`$SAFE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"; then
       warn "auto-create DB failed — assuming it exists"

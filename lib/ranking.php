@@ -427,6 +427,9 @@ class Ranking
      */
     public static function menu(bool $isAdmin = false): string
     {
+        // نکته: این منو حتماً باید ikb باشد. کیبورد متنی (kb) میدان
+        // callback_data را ندارد و تلگرام آن را بی‌صدا دور می‌ریزد؛ نتیجه
+        // دکمه‌هایی است که هیچ کاری نمی‌کنند.
         $rows = [
             [['text' => '🏆 جدول امتیاز', 'callback_data' => 'rank:top']],
             [['text' => '🏅 رتبهٔ من', 'callback_data' => 'rank:me']],
@@ -435,8 +438,8 @@ class Ranking
         if ($isAdmin) {
             $rows[] = [['text' => '⚙️ تنظیمات رنکینگ', 'callback_data' => 'rank:cfg']];
         }
-        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
-        return BotApi::kb($rows);
+        $rows[] = Nav::backRow('menu', '🔙 بازگشت به منو');
+        return BotApi::ikb($rows);
     }
 
     /** متن توضیحیِ «نحوهٔ امتیازدهی» */

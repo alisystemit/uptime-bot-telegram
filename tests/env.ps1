@@ -69,7 +69,7 @@ Write-Host 'schema installed'
 # --- 4) tests ----------------------------------------------------------------
 if ($Run) {
     $fail = 0
-    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'test_fixes.php')) {
+    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'nav_test.php', 'test_fixes.php', 'fuzz.php', 'fuzz_http.php')) {
         $f = Join-Path $PSScriptRoot $t
         if (-not (Test-Path $f)) { continue }
         Write-Host ''

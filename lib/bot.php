@@ -314,7 +314,7 @@ class Bot
             case '📣 همگانی':
                 if (!$this->isAdmin()) { $this->unknown(); return; }
                 $this->setStep('await_broadcast');
-                $this->send("📣 پیام همگانی را بفرستید (متن، عکس، فایل…).\n\nپیام برای همهٔ کاربران ارسال می‌شود.\nانصراف: ❌ انصراف", BotApi::kb([[['text' => '❌ انصراف']]]));
+                $this->send("📣 پیام همگانی را بفرستید (متن، عکس، فایل…).\n\nپیام برای همهٔ کاربران ارسال می‌شود.\nانصراف: ❌ انصراف", Nav::cancelKb());
                 return;
             case '👥 کاربران':
                 if (!$this->isAdmin()) { $this->unknown(); return; }
@@ -355,6 +355,17 @@ class Bot
     /** @return bool آیا پیام به‌عنوان ورودیِ یک مرحله پردازش شد؟ */
     private function handleStep(string $text, array $msg, string $step): bool
     {
+        // ── فرار سراسری ──────────────────────────────────────────────
+        // این چک *قبل* از switch است تا هیچ حالتی نتواند کاربر را گیر بیندازد.
+        // اگر مرحلهٔ جدیدی اضافه شد، بدون کار اضافه خودکار قابل لغو است.
+        // مقصد بازگشت متناسب با همان مرحله انتخاب می‌شود (نه همیشه منوی اصلی).
+        if (Nav::isEscape($text)) {
+            $dest = $this->escapeMenu($step);
+            $this->clearStep();
+            $this->send('❌ انصراف داده شد.', $dest);
+            return true;
+        }
+
         switch ($step) {
             case 'await_site':
                 $this->stepAddSite($text);
@@ -418,9 +429,65 @@ class Bot
                 }
                 $this->stepRankGrant($text);
                 return true;
+
+            // دعوت به پیگیری مانیتور مشترک — کاربر به‌جای دکمه متن فرستاده
+            case 'await_invite': {
+                $t = $this->temp();
+                $site = Db::one('SELECT * FROM `site` WHERE `id` = ?', [(int)($t['site'] ?? 0)]);
+                if (!$site) {
+                    $this->clearStep();
+                    $this->send('❌ این دعوت دیگر معتبر نیست.', $this->sharedMenu());
+                    return true;
+                }
+                $this->send("👥 <b>دعوت به پیگیری مانیتور</b>\n\n"
+                    . "🔗 <code>" . tgH($site['label'] ?: $site['target']) . "</code>\n\n"
+                    . "یکی از دکمه‌ها را بزنید یا انصراف دهید.",
+                    BotApi::ikb([
+                        [['text' => '👁️ فقط ناظر (اعلان‌ها)', 'callback_data' => 'sacc:' . (int)$site['id'] . ':viewer'],
+                         ['text' => '🛠 ناظر + مدیر', 'callback_data' => 'sacc:' . (int)$site['id'] . ':manager']],
+                        [['text' => '❌ انصراف', 'callback_data' => 'cancel']],
+                    ]));
+                return true;
+            }
         }
         $this->clearStep();
         return false;
+    }
+
+    /**
+     * مقصد دکمهٔ «انصراف/بازگشت» برای هر مرحله — تا کاربر به همان جایی برگردد
+     * که عملیات را از آنجا شروع کرده بود، نه همیشه منوی اصلی.
+     */
+    private function escapeMenu(string $step): string
+    {
+        $t = $this->temp();
+        switch ($step) {
+            case 'await_payment':
+            case 'await_code':
+                return $this->subMenu();
+            case 'await_domain':
+                return $this->domainMenu();
+            case 'await_setting':
+            case 'await_codegen':
+                return $this->adminPanelMenu();
+            case 'await_paygw': {
+                $code = (string)($t['code'] ?? '');
+                return $code !== '' ? $this->adminGatewayMenu($code) : $this->adminPanelMenu();
+            }
+            case 'await_maxms':
+            case 'await_keyword': {
+                $site = $this->ownSite((int)($t['site'] ?? 0));
+                return $site ? $this->siteMenu($site) : $this->sitesListMenu();
+            }
+            case 'await_rankgrant':
+                return Ranking::menu($this->isAdmin());
+            case 'await_invite':
+                return $this->sharedMenu();
+            case 'await_broadcast':
+                return $this->isAdmin() ? $this->adminMenu() : $this->mainMenu();
+            default:
+                return $this->mainMenu();
+        }
     }
 
     // --------------------------- افزودن سایت
@@ -446,7 +513,7 @@ class Bot
             . "▪️ <code>1.2.3.4:22</code> — بررسی پورت SSH\n\n"
             . "سایت‌های شما: " . faNum($count) . " از " . faNum($max) . "\n"
             . "انصراف: ❌ انصراف",
-            BotApi::kb([[['text' => '❌ انصراف']]])
+            Nav::cancelKb()
         );
     }
 
@@ -459,7 +526,7 @@ class Bot
         }
         $norm = normalizeTarget($text);
         if (empty($norm['ok']) || empty($norm['target']) || empty($norm['type']) || empty($norm['host'])) {
-            $this->send("❌ " . $norm['error'] . "\n\nدوباره تلاش کنید یا ❌ انصراف بزنید.", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("❌ " . $norm['error'] . "\n\nدوباره تلاش کنید یا ❌ انصراف بزنید.", Nav::cancelKb());
             return;
         }
         $count = (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `user_id` = ?', [$this->uid]);
@@ -470,7 +537,7 @@ class Bot
         }
         $dup = Db::val('SELECT COUNT(*) FROM `site` WHERE `user_id` = ? AND `target` = ?', [$this->uid, $norm['target']]);
         if ((int)$dup > 0) {
-            $this->send("⚠️ این سایت قبلاً ثبت شده است.\nآدرس دیگری بفرستید یا ❌ انصراف بزنید.", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("⚠️ این سایت قبلاً ثبت شده است.\nآدرس دیگری بفرستید یا ❌ انصراف بزنید.", Nav::cancelKb());
             return;
         }
         try {
@@ -545,7 +612,7 @@ class Bot
                 BotApi::ikb([
                     [['text' => '👁️ فقط ناظر (اعلان‌ها)', 'callback_data' => 'sacc:' . (int)$site['id'] . ':viewer'],
                      ['text' => '🛠 ناظر + مدیر', 'callback_data' => 'sacc:' . (int)$site['id'] . ':manager']],
-                    [['text' => '❌ نمی‌خواهم', 'callback_data' => 'menu']],
+                    Nav::backRow('cancel', '❌ انصراف از دعوت'),
                 ]));
             return;
         }
@@ -698,7 +765,7 @@ class Bot
         $num = preg_replace('/[^\d]/', '', faToLatin($text));
         $v = (int)$num;
         if ($v < 100 || $v > 120000) {
-            $this->send("⛔️ عدد بین ۱۰۰ تا ۱۲۰۰۰۰ میلی‌ثانیه بفرستید.\nیا <code>0</code> برای خاموش کردن.", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("⛔️ عدد بین ۱۰۰ تا ۱۲۰۰۰۰ میلی‌ثانیه بفرستید.\nیا <code>0</code> برای خاموش کردن.", Nav::cancelKb());
             return;
         }
         Db::q('UPDATE `site` SET `max_ms` = ? WHERE `id` = ?', [$v, $siteId]);
@@ -724,7 +791,7 @@ class Bot
         }
         $kw = mb_substr(trim($text), 0, 190);
         if ($kw === '') {
-            $this->send('⛔️ یک متن بفرستید یا <code>0</code> برای خاموش کردن.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send('⛔️ یک متن بفرستید یا <code>0</code> برای خاموش کردن.', Nav::cancelKb());
             return;
         }
         if ((string)$site['type'] !== 'http') {
@@ -779,12 +846,12 @@ class Bot
         }
         $norm = normalizeTarget($text);
         if (!$norm['ok'] || $norm['type'] !== 'ping') {
-            $this->send("❌ یک دامنهٔ معتبر بفرستید (بدون https و بدون مسیر).\nمثال: <code>example.ir</code>", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("❌ یک دامنهٔ معتبر بفرستید (بدون https و بدون مسیر).\nمثال: <code>example.ir</code>", Nav::cancelKb());
             return;
         }
         $domain = baseDomain((string)$norm['host']);
         if ((int)Db::val('SELECT COUNT(*) FROM `domain_watch` WHERE user_id = ? AND chat_id = 0 AND `domain` = ?', [$this->uid, $domain]) > 0) {
-            $this->send('⚠️ این دامنه از قبل ثبت شده است.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send('⚠️ این دامنه از قبل ثبت شده است.', Nav::cancelKb());
             return;
         }
         $info = Domain::whois($domain);
@@ -800,7 +867,7 @@ class Bot
                 ]
             );
         } catch (Throwable $e) {
-            $this->send('❌ ثبت دامنه ناموفق بود.', BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send('❌ ثبت دامنه ناموفق بود.', Nav::cancelKb());
             return;
         }
         Db::logEvent($this->uid, 'add_domain', $domain);
@@ -874,7 +941,7 @@ class Bot
         $code = preg_replace('/[^A-Z0-9\-]/', '', $code) ?? $code;
         $row = Db::one('SELECT * FROM `codes` WHERE `code` = ?', [$code]);
         if (!$row || (int)$row['uses'] >= (int)$row['uses_max']) {
-            $this->send("❌ کد نامعتبر یا منقضی/مصرف‌شده است.\n\nدوباره تلاش کنید:", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("❌ کد نامعتبر یا منقضی/مصرف‌شده است.\n\nدوباره تلاش کنید:", Nav::cancelKb());
             return;
         }
         $days = max(1, (int)$row['days']);
@@ -916,7 +983,7 @@ class Bot
             $photo = '';
         }
         if ($photo === null) {
-            tgSend($this->chatId, "لطفاً تصویر فیش/رسید پرداخت را بفرستید (یا متن توضیح).", ['reply_markup' => BotApi::kb([[['text' => '❌ انصراف']]])]);
+            tgSend($this->chatId, "لطفاً تصویر فیش/رسید پرداخت را بفرستید (یا متن توضیح).", ['reply_markup' => Nav::cancelKb()]);
             return;
         }
         $amount = Db::getInt('price', 0);
@@ -1004,11 +1071,11 @@ class Bot
         ];
         if (!isset($rules[$key])) { $this->clearStep(); $this->unknown(); return; }
         $num = preg_replace('/[^\d]/', '', faToLatin(trim($text)));
-        if ($num === '') { $this->send('⛔️ لطفاً یک عدد وارد کنید:', BotApi::kb([[['text' => '❌ انصراف']]])); return; }
+        if ($num === '') { $this->send('⛔️ لطفاً یک عدد وارد کنید:', Nav::cancelKb()); return; }
         [$min, $max, $label] = $rules[$key];
         $v = (int)$num;
         if ($v < $min || $v > $max) {
-            $this->send("⛔️ مقدار باید بین " . faNum($min) . " و " . faNum($max) . " باشد.\n" . $label, BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("⛔️ مقدار باید بین " . faNum($min) . " و " . faNum($max) . " باشد.\n" . $label, Nav::cancelKb());
             return;
         }
         Db::set($key, (string)$v);
@@ -1025,7 +1092,7 @@ class Bot
         $days = isset($parts[0]) ? (int)preg_replace('/\D/', '', $parts[0]) : 0;
         $count = isset($parts[1]) ? (int)preg_replace('/\D/', '', $parts[1]) : 0;
         if ($days < 1 || $days > 3650 || $count < 1 || $count > 50) {
-            $this->send("⛔️ فرمت درست: <code>30 5</code>\n\nیعنی: کدهای ۳۰ روزه، تعداد ۵\n(حداکثر ۵۰ کد در هر نوبت)", BotApi::kb([[['text' => '❌ انصراف']]]));
+            $this->send("⛔️ فرمت درست: <code>30 5</code>\n\nیعنی: کدهای ۳۰ روزه، تعداد ۵\n(حداکثر ۵۰ کد در هر نوبت)", Nav::cancelKb());
             return;
         }
         $codes = [];
@@ -1121,6 +1188,15 @@ class Bot
                 $this->clearStep();
                 $this->edit($msgId, $this->welcome(), $this->mainMenu());
                 return;
+
+            // انصرافِ سراسری با دکمهٔ inline (برای وقتی کاربر داخل گروه است
+            // و کیبورد متنی در دسترس نیست)
+            case 'cancel':
+            case 'close':
+            case 'nope':
+                $this->clearStep();
+                $this->edit($msgId, "❌ <b>انصراف داده شد.</b>\n\n" . Nav::helpLine(), Nav::menu([], 'menu'));
+                return;
             case 'help':
                 $this->edit($msgId, $this->helpText(), $this->mainMenu());
                 return;
@@ -1150,7 +1226,7 @@ class Bot
                 return;
             case 'codein':
                 $this->setStep('await_code');
-                $this->edit($msgId, "🎟 کد فعال‌سازی را بفرستید:\n\n<code>UP-XXXX-XXXX</code>", BotApi::kb([[['text' => '❌ انصراف']]]));
+                $this->edit($msgId, "🎟 کد فعال‌سازی را بفرستید:\n\n<code>UP-XXXX-XXXX</code>", Nav::cancelKb());
                 return;
             // توجه: case 'buy' در بخش «درگاه‌های پرداخت» پایین‌تر پیاده شده است
             // تا اگر درگاهی فعال باشد، منوی انتخاب درگاه نشان داده شود.
@@ -1253,7 +1329,7 @@ class Bot
                     . "مثال: <code>2000</code> یعنی ۲ ثانیه\n"
                     . "برای خاموش کردن: <code>0</code>\n\n"
                     . "فعلی: " . ((int)$site['max_ms'] > 0 ? faMs((int)$site['max_ms']) : 'خاموش'),
-                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                    Nav::cancelKb());
                 return;
             }
             case 'skw': {
@@ -1267,7 +1343,7 @@ class Bot
                     . "برای خاموش کردن: <code>0</code>\n\n"
                     . "فعلی: " . (trim((string)$site['keyword']) !== '' ? tgH(truncateFa((string)$site['keyword'], 40)) : 'خاموش')
                     . "\n⚠️ فقط برای مانیتورهای HTTP/HTTPS کاربرد دارد.",
-                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                    Nav::cancelKb());
                 return;
             }
             case 'slink': {
@@ -1396,7 +1472,7 @@ class Bot
                         . "💳 کارت: <code>" . tgH(Db::get('card', '—')) . "</code>\n"
                         . "📆 مدت: " . faNum(Db::getInt('vip_days', 30)) . " روز\n\n"
                         . "پس از انتقال، <b>رسید (عکس یا فایل)</b> را همین‌جا بفرستید تا مدیر بررسی و فعال کند.",
-                        BotApi::kb([[['text' => '❌ انصراف']]])
+                        Nav::cancelKb()
                     );
                 }
                 return;
@@ -1409,7 +1485,7 @@ class Bot
             case 'porder':
                 $this->edit($msgId, $this->payOrdersText(), BotApi::ikb([
                     [['text' => '💳 پرداخت جدید', 'callback_data' => 'buy']],
-                    [['text' => '🔙 منو', 'callback_data' => 'menu']],
+                    [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
                 ]));
                 return;
             case 'pgws_list':
@@ -1454,7 +1530,7 @@ class Bot
                     . "<code>auth_style</code> bearer | header | query | body\n"
                     . "<code>sign_algo</code> مثلاً sha256 برای بررسی امضای وب‌هوک\n\n"
                     . "فعلی: <code>" . tgH(mb_substr((string)(PayGws::get('generic')['settings'] ?? ''), 0, 200)) . "</code>",
-                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                    Nav::cancelKb());
                 return;
             case 'pgwx':
                 if (!$this->isAdmin()) return;
@@ -1469,7 +1545,7 @@ class Bot
                 $this->edit($msgId, "🌐 <b>افزودن دامنه</b>\n\n"
                     . "نام دامنه را بفرستید (بدون https و بدون مسیر):\n<code>example.ir</code>\n\n"
                     . "تاریخ انقضای ثبت آن از طریق WHOIS پایش می‌شود و پیش از انقضا هشدار می‌گیرید.\n\n"
-                    . "انصراف: ❌ انصراف", BotApi::kb([[['text' => '❌ انصراف']]]));
+                    . "انصراف: ❌ انصراف", Nav::cancelKb());
                 return;
             case 'ddel': {
                 Db::exec('DELETE FROM `domain_watch` WHERE `id` = ? AND `user_id` = ? AND `chat_id` = 0', [(int)$arg, $this->uid]);
@@ -1491,7 +1567,7 @@ class Bot
                 return;
             case 'abroadcast':
                 $this->setStep('await_broadcast');
-                $this->edit($msgId, "📣 پیام همگانی را بفرستید (متن/عکس/فایل).\nانصراف: ❌ انصراف", BotApi::kb([[['text' => '❌ انصراف']]]));
+                $this->edit($msgId, "📣 پیام همگانی را بفرستید (متن/عکس/فایل).\nانصراف: ❌ انصراف", Nav::cancelKb());
                 return;
 
             // ---------- ادمین: توقف سراسری ----------
@@ -1573,7 +1649,7 @@ class Bot
                 if (!isset($labels[$arg])) return;
                 $this->setStep('await_setting', ['key' => $arg]);
                 $this->edit($msgId, "⚙️ مقدار جدید برای <b>{$labels[$arg]}</b> را بفرستید:\n\nفعلی: <code>" . tgH((string)Db::get($arg, '')) . "</code>",
-                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                    Nav::cancelKb());
                 return;
             }
             case 'codes':
@@ -1588,7 +1664,7 @@ class Bot
                 $this->setStep('await_codegen');
                 $this->edit($msgId, "🎟 <b>ساخت کد فعال‌سازی</b>\n\nفرمت را بفرستید:\n<code>30 5</code>\n\n"
                     . "یعنی: کدهای <b>۳۰ روزه</b>، تعداد <b>۵</b>\n(حداکثر ۵۰ کد در هر نوبت)",
-                    BotApi::kb([[['text' => '❌ انصراف']]]));
+                    Nav::cancelKb());
                 return;
 
             // ---------- ادمین: کاربران ----------
@@ -1674,6 +1750,12 @@ class Bot
                 $this->sendPayments();
                 return;
             }
+
+            // دکمهٔ ناشناس (مثلاً از پیام قدیمی) — کاربر را بدون راه برگشت رها نکن
+            default:
+                $this->clearStep();
+                $this->edit($msgId, $this->welcome(), $this->mainMenu());
+                return;
         }
     }
 
@@ -1985,7 +2067,7 @@ class Bot
                 $this->setStep('await_rankgrant');
                 $this->edit($msgId,
                     "🎁 <b>جایزهٔ دستی</b>\n\nشناسهٔ کاربر و مقدار امتیاز را با فاصله بفرستید:\n<code>123456 50</code>",
-                    BotApi::kb([[['text' => '❌ انصراف', 'callback_data' => 'rank:top']]]));
+                    Nav::cancelKb());
                 return;
 
             case 'top':
@@ -2223,6 +2305,8 @@ class Bot
             [['text' => $paused ? '▶️ ادامهٔ چک‌ها' : '⏸ توقف چک‌ها'], ['text' => '🌐 دامنه‌های من']],
             [['text' => '⚙️ تنظیمات'], ['text' => '🛒 اشتراک ویژه']],
             [['text' => 'ℹ️ راهنما']],
+            // سطر همیشه‌حاضر: در هر مرحلهٔ ورودی راه فرار دارد
+            [['text' => '❌ انصراف']],
         ];
         if ($this->isAdmin()) {
             $rows[] = [['text' => '📊 آمار مدیریتی'], ['text' => '📣 همگانی']];
@@ -2235,7 +2319,7 @@ class Bot
     {
         return BotApi::kb([
             [['text' => '🛒 اشتراک ویژه'], ['text' => 'ℹ️ راهنما']],
-            [['text' => '🏠 منو']],
+            [['text' => '🏠 منو'], ['text' => '❌ انصراف']],
         ]);
     }
 
@@ -2245,6 +2329,7 @@ class Bot
             [['text' => '📊 آمار مدیریتی'], ['text' => '📣 همگانی']],
             [['text' => '👥 کاربران'], ['text' => '💳 پرداخت‌ها']],
             [['text' => '⚙️ پنل مدیریت'], ['text' => '⏰ کرون چک']],
+            [['text' => '🏆 رنکینگ'], ['text' => '❌ انصراف']],
             [['text' => '🏠 منو']],
         ]);
     }
@@ -2280,7 +2365,7 @@ class Bot
         }
         $rows[] = [['text' => '➕ افزودن سایت', 'callback_data' => 'addsite'], ['text' => '📈 گزارش', 'callback_data' => 'report']];
         $rows[] = [['text' => '📜 رخدادها', 'callback_data' => 'uincer'], ['text' => '👥 مشترک', 'callback_data' => 'shared']];
-        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }
 
@@ -2313,7 +2398,7 @@ class Bot
             $rows[] = [['text' => $icon . ' ' . mb_substr((string)$d['domain'], 0, 30), 'callback_data' => 'ddel:' . (int)$d['id']]];
         }
         $rows[] = [['text' => '➕ افزودن دامنه', 'callback_data' => 'dadd']];
-        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }
 
@@ -2324,7 +2409,7 @@ class Bot
             [['text' => '📤 اشتراک‌گذاری در تلگرام', 'url' => 'https://t.me/share/url?url=' . rawurlencode($url) . '&text=' . rawurlencode('📊 وضعیت زندهٔ سایت‌های من:')]],
             [['text' => '🌐 باز کردن صفحه', 'url' => $url]],
             [['text' => '🔄 تغییر لینک', 'callback_data' => 'regen']],
-            [['text' => '🔙 منو', 'callback_data' => 'menu']],
+            [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
         ]);
     }
 
@@ -2336,7 +2421,7 @@ class Bot
         // اگر درگاهی فعال باشد، «پرداخت» مستقل از access_mode هم باز است
         if ($mode === 'paid' || $gws) $rows[] = [['text' => '💳 پرداخت آنلاین', 'callback_data' => 'buy']];
         if ($mode !== 'open' || $gws) $rows[] = [['text' => '🎟 ورود کد فعال‌سازی', 'callback_data' => 'codein']];
-        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }
 
@@ -2347,7 +2432,7 @@ class Bot
             [['text' => '👥 مانیتورهای مشترک', 'callback_data' => 'shared'], ['text' => '🌐 دامنه‌های من', 'callback_data' => 'domains']],
             [['text' => '📜 رخدادهای من', 'callback_data' => 'uincer'], ['text' => '🔗 صفحهٔ وضعیت من', 'callback_data' => 'share']],
             [['text' => '🛒 اشتراک', 'callback_data' => 'sub']],
-            [['text' => '🔙 منو', 'callback_data' => 'menu']],
+            [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
         ]);
     }
 
@@ -2379,7 +2464,7 @@ class Bot
         if ($page > 0) $nav[] = ['text' => '⏮ قبلی', 'callback_data' => 'ausers:' . ($page - 1)];
         if ($page < $pages - 1) $nav[] = ['text' => 'بعدی ⏭', 'callback_data' => 'ausers:' . ($page + 1)];
         if ($nav) $kb[] = $nav;
-        $kb[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $kb[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
         return [$text, BotApi::ikb($kb)];
     }
 
@@ -2399,7 +2484,7 @@ class Bot
         $rows = Db::all("SELECT * FROM `payments` WHERE `status` = 'pending' ORDER BY `id` DESC LIMIT 10");
         if (!$rows) {
             $txt = "💳 پرداخت در انتظار بررسی وجود ندارد.";
-            $kb = BotApi::ikb([[['text' => '🔙 منو', 'callback_data' => 'menu']]]);
+            $kb = BotApi::ikb([[['text' => '🔙 بازگشت', 'callback_data' => 'menu']]]);
         } else {
             $txt = "💳 <b>پرداخت‌های در انتظار</b>\n\n";
             $kb = [];
@@ -2407,7 +2492,7 @@ class Bot
                 $txt .= "▫️ #" . faNum($r['id']) . " — کاربر <code>{$r['user_id']}</code> — " . faMoney((int)$r['amount']) . "\n";
                 $kb[] = [['text' => 'بررسی #' . faNum($r['id']), 'callback_data' => 'apayok:' . $r['id']]];
             }
-            $kb[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+            $kb[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
             $kb = BotApi::ikb($kb);
         }
         if ($editMsgId) $this->edit($editMsgId, $txt, $kb);

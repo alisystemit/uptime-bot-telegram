@@ -193,13 +193,14 @@ class Stats
     public static function engine(): array
     {
         $last = Db::get('last_round_at');
+        if ($last !== null && (($ts = strtotime((string)$last)) === false)) $last = null;
         $interval = max(10, Db::getInt('check_interval', 20));
         return [
             'interval' => $interval,
             'last_round' => $last,
-            'stale' => $last ? (time() - strtotime($last)) : null,
+            'stale' => $last ? max(0, time() - (int)strtotime((string)$last)) : null,
             'paused' => Db::getBool('pause_all', false),
-            'cron_healthy' => $last !== null && (time() - strtotime($last)) < max(120, $interval * 3),
+            'cron_healthy' => $last !== null && (time() - (int)strtotime((string)$last)) < max(120, $interval * 3),
         ];
     }
 

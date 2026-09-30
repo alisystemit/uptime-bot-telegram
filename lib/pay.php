@@ -101,6 +101,16 @@ class PayGws
         return $cache[$ck][$key] ?? $default;
     }
 
+    /**
+     * خواندن یک کلید اسکالر از تنظیمات JSON درگاه.
+     * اگر مقدار آرایه/شیء باشد (که مدیر در پنل وارد کرده) مقدار پیش‌فرض
+     * برمی‌گردد تا کستِ (string) بعدی warning ندهد.
+     */
+    public static function text(array $gw, string $key, string $default = ''): string
+    {
+        return toStr(self::setting($gw, $key, $default), $default);
+    }
+
     public static function setSetting(string $code, string $key, $value): void
     {
         $gw = self::get($code);
@@ -203,9 +213,14 @@ class Pay
         }
 
         $payAmount = (int)($res['pay_amount'] ?? $gatewayAmount);
+        if ($payAmount <= 0) $payAmount = $gatewayAmount;
         $card = (array)($res['card'] ?? []);
         $expires = (string)($res['expires_at'] ?? '');
-        $expTs = $expires !== '' ? (int)strtotime($expires) : 0;
+        $expTs = 0;
+        if ($expires !== '') { $t = (int)strtotime($expires); if ($t > 0) $expTs = $t; }
+        $refStr = (string)($res['ref'] ?? '');
+        if ($refStr === '') { self::bumpStat($code, false, 'شناسه درگاه خالی'); return ['ok' => false, 'error' => 'شناسه درگاه از پاسخ خوانده نشد']; }
+        $payUrlStr = (string)($res['pay_url'] ?? '');
 
         try {
             Db::q(
@@ -216,7 +231,7 @@ class Pay
                 [
                     $userId, $amountToman, 'pending',
                     mb_substr((string)($res['tracking_id'] ?? ($orderId . ' | ' . $args['desc'])), 0, 255),
-                    $code, $cls::kind(), (string)$res['ref'], mb_substr((string)$res['pay_url'], 0, 500),
+                    $code, $cls::kind(), $refStr, mb_substr($payUrlStr, 0, 500),
                     mb_substr((string)($card['number'] ?? ''), 0, 32), mb_substr((string)($card['holder'] ?? ''), 0, 80),
                     $payAmount, $expTs > 0 ? date('Y-m-d H:i:s', $expTs) : null,
                 ]
@@ -226,7 +241,9 @@ class Pay
             uptimeLog('error', 'payments insert failed: ' . $e->getMessage());
             return ['ok' => false, 'error' => 'ثبت سفارش در دیتابیس ناموفق بود'];
         }
-        $id = (int)Db::val('SELECT MAX(`id`) FROM `payments` WHERE `user_id` = ? AND `ref_id` = ?', [$userId, (string)$res['ref']]);
+        $id = (int)Db::val('SELECT MAX(`id`) FROM `payments` WHERE `user_id` = ? AND `ref_id` = ?', [$userId, $refStr]);
+        if ($id <= 0) { try { $id = (int)Db::pdo()->lastInsertId(); } catch (Throwable $e) { $id = 0; } }
+        if ($id <= 0) { uptimeLog('error', 'payments id missing ref=' . $refStr); return ['ok' => false, 'error' => 'ثبت سفارش ناموفق بود']; }
         self::bumpStat($code, true, '');
         Db::logEvent($userId, 'pay_created', $code . '#' . $id);
 

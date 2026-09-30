@@ -69,8 +69,12 @@ function botUsername(): string
 function botAdminIds(): array
 {
     $cfg = appConfig();
+    if (!$cfg) return [];
     $ids = [];
-    foreach ((array)($cfg['admin_id'] ?? []) as $v) {
+    $single = $cfg['admin_id'] ?? null;
+    if (is_array($single)) { foreach ($single as $v) { if (is_numeric($v) && (int)$v > 0) $ids[] = (int)$v; } }
+    elseif (is_numeric($single) && (int)$single > 0) $ids[] = (int)$single;
+    foreach ((array)($cfg['admin_ids'] ?? []) as $v) {
         if (is_numeric($v) && (int)$v > 0) $ids[] = (int)$v;
     }
     foreach ((array)($cfg['admin_ids'] ?? []) as $v) {

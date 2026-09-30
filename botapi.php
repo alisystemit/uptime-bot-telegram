@@ -8,6 +8,17 @@ class BotApi
     private static ?string $proxy = null;
     private static int $maxRetries = 3;
     private static int $baseDelay = 200000; // 200ms
+    /**
+     * حالت آفلاین: هیچ درخواستی به تلگرام ارسال نمی‌شود.
+     * برای dry-run و تست خودکار (جایی که فقط منطق کد مهم است).
+     * با فعال‌شدن، call() بلافاصله پاسخ ساختگی موفق برمی‌گرداند.
+     */
+    private static bool $offline = false;
+
+    public static function offline(bool $on = true): void
+    {
+        self::$offline = $on;
+    }
 
     /** لاگ شکست API — هرگز توکن را در پیام نمیاورد */
     private static function logFail(string $method, string $detail): void
@@ -25,6 +36,11 @@ class BotApi
 
     public static function call(string $token, string $method, array $params = []): array
     {
+        if ($token === '' || $method === '') return ['ok' => false, 'description' => 'empty token/method'];
+        if (self::$offline) {
+            return ['ok' => true, 'offline' => true, 'result' => ['message_id' => 0]];
+        }
+        if (!function_exists('curl_init')) { self::logFail($method, 'curl missing'); return ['ok' => false, 'description' => 'curl missing']; }
         $url = "https://api.telegram.org/bot{$token}/{$method}";
         $attempt = 0;
         $lastErr = '';
@@ -32,9 +48,9 @@ class BotApi
         $flat = [];
         foreach ($params as $k => $v) {
             if ($v === null) continue;
-            if (is_array($v)) $flat[$k] = json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            if (is_array($v)) { $j = json_encode($v, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); if ($j === false) continue; $flat[$k] = $j; }
             elseif (is_bool($v)) $flat[$k] = $v ? 'true' : 'false';
-            else $flat[$k] = $v;
+            elseif (is_scalar($v)) $flat[$k] = $v;
         }
         $body = http_build_query($flat, '', '&');
 
@@ -42,6 +58,7 @@ class BotApi
             if ($attempt > 0) usleep(self::$baseDelay * (2 ** ($attempt - 1)));
 
             $ch = curl_init($url);
+            if ($ch === false) { $lastErr = 'curl_init failed'; $attempt++; continue; }
             $opts = [
                 CURLOPT_RETURNTRANSFER => true,
                 CURLOPT_POST => true,
@@ -114,6 +131,7 @@ class BotApi
 
     public static function send(string $token, $chatId, string $text, array $extra = []): array
     {
+        if ((int)$chatId === 0 || trim($text) === '') return ['ok' => false, 'description' => 'empty chat/text'];
         $r = self::call($token, 'sendMessage', array_merge([
             'chat_id' => $chatId,
             'text' => $text,
@@ -127,6 +145,7 @@ class BotApi
 
     public static function answerCb(string $token, string $cbId, string $text = ''): void
     {
+        if ($cbId === '') return;
         $r = self::call($token, 'answerCallbackQuery', ['callback_query_id' => $cbId, 'text' => $text]);
         if (!is_array($r) || empty($r['ok'])) {
             self::logFail('answerCallbackQuery', (($r['description'] ?? '') ?: 'no response'));
@@ -135,6 +154,8 @@ class BotApi
 
     public static function edit(string $token, $chatId, $msgId, string $text, array $extra = []): array
     {
+        if ((int)$chatId === 0 || (int)$msgId <= 0) return ['ok' => false, 'description' => 'empty chat/msg'];
+        if (trim($text) === '') $text = '…';
         $r = self::call($token, 'editMessageText', array_merge([
             'chat_id' => $chatId, 'message_id' => $msgId, 'text' => $text, 'parse_mode' => 'HTML',
         ], $extra));
@@ -153,12 +174,16 @@ class BotApi
 
     public static function kb(array $rows, bool $oneTime = false): string
     {
-        return json_encode(['keyboard' => $rows, 'resize_keyboard' => true, 'one_time_keyboard' => $oneTime], JSON_UNESCAPED_UNICODE);
+        if (!$rows) return json_encode(['keyboard' => [], 'resize_keyboard' => true], JSON_UNESCAPED_UNICODE) ?: '{}';
+        $j = json_encode(['keyboard' => $rows, 'resize_keyboard' => true, 'one_time_keyboard' => $oneTime], JSON_UNESCAPED_UNICODE);
+        return $j === false ? '{}' : $j;
     }
 
     public static function ikb(array $rows): string
     {
-        return json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE);
+        if (!$rows) return json_encode(['inline_keyboard' => []], JSON_UNESCAPED_UNICODE) ?: '{}';
+        $j = json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE);
+        return $j === false ? '{}' : $j;
     }
 
     public static function removeKb(): string

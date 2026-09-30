@@ -91,7 +91,7 @@ class PayHttp
         $err = (string)curl_error($ch);
         curl_close($ch);
 
-        $out['body'] = (string)$res;
+        $out['body'] = toStr($res);
         $out['json'] = json_decode($out['body'], true);
         $out['ok'] = $res !== false && $out['status'] >= 200 && $out['status'] < 300;
         if ($res === false) $out['error'] = $err !== '' ? $err : 'ارتباط با درگاه برقرار نشد';
@@ -106,18 +106,24 @@ class PayHttp
                 if (!empty($json[$k])) {
                     $v = $json[$k];
                     if (is_array($v)) {
-                        if (isset($v['message'])) return (string)$v['message'];
-                        if (isset($v['code'])) return (string)$v['code'];
+                        if (isset($v['message'])) return toStr($v['message']);
+                        if (isset($v['code'])) return toStr($v['code']);
                         return (string)json_encode($v, JSON_UNESCAPED_UNICODE);
                     }
-                    return (string)$v;
+                    return toStr($v);
                 }
             }
         }
         return 'خطای درگاه (کد ' . $status . ')';
     }
 
-    /** استخراج یک کلید از پاسخ با مسیر نقطه‌ای: a.b.c */
+    /**
+     * استخراج یک کلید از پاسخ با مسیر نقطه‌ای: a.b.c
+     *
+     * نکتهٔ امنیتی: اگر مقدار نهایی آرایه یا شیء باشد (درگاه بیرونی می‌تواند
+     * هر JSON دلخواهی بفرستد) مقدار پیش‌فرض برگردانده می‌شود، تا کستِ
+     * (string) که بعد از این می‌آید warning ندهد.
+     */
     public static function dig($json, string $path, $default = null)
     {
         $cur = $json;
@@ -125,6 +131,7 @@ class PayHttp
             if (!is_array($cur) || !array_key_exists($k, $cur)) return $default;
             $cur = $cur[$k];
         }
+        if ($cur === null || is_array($cur) || is_object($cur)) return $default;
         return $cur;
     }
 }
@@ -144,10 +151,10 @@ class PayZarinpal implements PayDriver
 
     private static function base(array $gw, string $path): string
     {
-        $b = rtrim(trim((string)($gw['base_url'] ?? '')), '/');
+        $b = rtrim(trim(toStr($gw['base_url']?? '')), '/');
         if ($b === '') {
             // اگر کلید با sandbox شروع شود، محیط آزمایشی انتخاب می‌شود
-            $b = strpos((string)($gw['api_key'] ?? ''), 'sandbox') === 0
+            $b = strpos(toStr($gw['api_key']?? ''), 'sandbox') === 0
                 ? 'https://sandbox.zarinpal.com/pg/v4' : 'https://api.zarinpal.com/pg/v4';
         } elseif (!preg_match('#/v\d+$#', $b)) {
             // مدیر فقط دامنه/پراکسی را داده؛ بخش نسخهٔ API را خودمان اضافه می‌کنیم
@@ -159,14 +166,14 @@ class PayZarinpal implements PayDriver
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $mid = trim((string)($gw['merchant_id'] ?? $gw['api_key'] ?? ''));
+        $mid = trim(toStr($gw['merchant_id']?? $gw['api_key'] ?? ''));
         if ($mid === '') { $r['error'] = 'کد Merchant زرین‌پال تنظیم نشده است'; return $r; }
 
         $resp = PayHttp::call(self::base($gw, '/payment/request.json'), [
             'merchant_id'  => $mid,
-            'amount'       => (int)$a['gateway_amount'],
-            'description'  => (string)$a['desc'],
-            'callback_url' => (string)$a['callback_url'],
+            'amount'       => toInt($a['gateway_amount'] ?? 0),
+            'description'  => toStr($a['desc'] ?? ''),
+            'callback_url' => toStr($a['callback_url'] ?? ''),
             'metadata'     => array_filter(['mobile' => $a['mobile'] ?? '', 'email' => $a['email'] ?? '']),
         ]);
         $code = (int)PayHttp::dig($resp['json'], 'data.code', 0);
@@ -182,11 +189,11 @@ class PayZarinpal implements PayDriver
     public static function verify(array $gw, array $order): array
     {
         $r = ['ok' => false, 'ref_id' => '', 'amount' => 0, 'error' => ''];
-        $mid = trim((string)($gw['merchant_id'] ?? $gw['api_key'] ?? ''));
+        $mid = trim(toStr($gw['merchant_id']?? $gw['api_key'] ?? ''));
         $resp = PayHttp::call(self::base($gw, '/payment/verify.json'), [
             'merchant_id' => $mid,
-            'amount'      => (int)$order['pay_amount'],
-            'authority'   => (string)$order['ref_id'],
+            'amount'      => toInt($order['pay_amount'] ?? 0),
+            'authority'   => toStr($order['ref_id'] ?? ''),
         ]);
         $code = (int)PayHttp::dig($resp['json'], 'data.code', 0);
         // 100 = موفق تازه، 101 = قبلاً تأیید شده (همان نتیجه برای ما)
@@ -204,8 +211,8 @@ class PayZarinpal implements PayDriver
 
     public static function callback(array $gw, array $in, string $raw): array
     {
-        $auth = (string)($in['Authority'] ?? $in['authority'] ?? '');
-        $st = strtoupper((string)($in['Status'] ?? $in['status'] ?? ''));
+        $auth = toStr($in['Authority']?? $in['authority'] ?? '');
+        $st = strtoupper(toStr($in['Status']?? $in['status'] ?? ''));
         return ['ref' => $auth, 'paid' => ($st === 'OK' && $auth !== ''), 'amount' => 0];
     }
 }
@@ -220,23 +227,23 @@ class PayVariza implements PayDriver
     public static function title(): string { return '🏦 واریزا (کارت‌به‌کارت خودکار)'; }
     public static function kind(): string { return 'card'; }
     public static function currency(): string { return 'toman'; }
-    public static function signed(array $gw): bool { return trim((string)($gw['secret'] ?? '')) !== ''; }
+    public static function signed(array $gw): bool { return trim(toStr($gw['secret']?? '')) !== ''; }
     public static function hasVerify(array $gw): bool { return false; }   // تأیید فقط با وب‌هوکِ امضاشده
 
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $key = trim((string)($gw['api_key'] ?? ''));
+        $key = trim(toStr($gw['api_key']?? ''));
         if ($key === '') { $r['error'] = 'کلید API واریزا تنظیم نشده است'; return $r; }
 
         $payload = [
-            'amount'     => (int)$a['gateway_amount'],   // واریزا تومان می‌گیرد
-            'return_url' => (string)$a['callback_url'],
-            'title'      => (string)$a['desc'],
+            'amount'     => toInt($a['gateway_amount'] ?? 0),   // واریزا تومان می‌گیرد
+            'return_url' => toStr($a['callback_url'] ?? ''),
+            'title'      => toStr($a['desc'] ?? ''),
         ];
         $st = PayGws::setting($gw, 'expires_in', '1h');
         if ($st !== '') $payload['expires_in'] = $st;
-        $card = trim((string)PayGws::setting($gw, 'card_last_4', ''));
+        $card = trim(PayGws::text($gw, 'card_last_4', ''));
         if ($card !== '') $payload['card_last_4'] = $card;
 
         $resp = PayHttp::call(self::base($gw) . '/api/v1/pay', $payload, ['Authorization: Bearer ' . $key]);
@@ -265,17 +272,17 @@ class PayVariza implements PayDriver
     {
         $j = json_decode($raw, true);
         $j = is_array($j) ? $j : $in;
-        $paid = (string)($j['status'] ?? '') === 'paid' || (string)($j['event'] ?? '') === 'payment.paid';
+        $paid = toStr($j['status']?? '') === 'paid' || toStr($j['event']?? '') === 'payment.paid';
         return [
-            'ref' => (string)($j['slug'] ?? $in['slug'] ?? ''),
+            'ref' => toStr($j['slug']?? $in['slug'] ?? ''),
             'paid' => $paid,
-            'amount' => (int)($j['amount'] ?? 0),   // تومان
+            'amount' => toInt($j['amount']?? 0),   // تومان
         ];
     }
 
     public static function base(array $gw): string
     {
-        $b = trim((string)($gw['base_url'] ?? ''));
+        $b = trim(toStr($gw['base_url']?? ''));
         return $b !== '' ? rtrim($b, '/') : 'https://variza.ir';
     }
 }
@@ -296,15 +303,15 @@ class PayCubepy implements PayDriver
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $token = trim((string)($gw['api_key'] ?? ''));
+        $token = trim(toStr($gw['api_key']?? ''));
         if ($token === '') { $r['error'] = 'توکن API کیوب‌پی تنظیم نشده است'; return $r; }
 
         $payload = [
-            'amount'         => (int)$a['gateway_amount'],
-            'order_id'       => (string)$a['order_id'],
-            'callback_url'   => (string)$a['callback_url'],
-            'description'    => (string)$a['desc'],
-            'customer_user_id' => (string)($a['user_id'] ?? ''),
+            'amount'         => toInt($a['gateway_amount'] ?? 0),
+            'order_id'       => toStr($a['order_id'] ?? ''),
+            'callback_url'   => toStr($a['callback_url'] ?? ''),
+            'description'    => toStr($a['desc'] ?? ''),
+            'customer_user_id' => toStr($a['user_id']?? ''),
             // برای ربات‌محور بهتر است مرورگر خریدار ریدایرکت نشود
             'redirect_after_payment' => false,
         ];
@@ -322,29 +329,29 @@ class PayCubepy implements PayDriver
         $card = [];
         if (!empty($j['card']['number'])) {
             $card = [
-                'number' => (string)$j['card']['number'],
-                'holder' => (string)($j['card']['holder'] ?? ''),
-                'sheba'  => (string)($j['card']['sheba'] ?? ''),
+                'number' => toStr($j['card']['number']),
+                'holder' => toStr($j['card']['holder']?? ''),
+                'sheba'  => toStr($j['card']['sheba']?? ''),
             ];
         }
         return [
             'ok' => true,
-            'pay_url' => (string)($j['payment_link'] ?? ''),
-            'ref' => (string)($j['authority'] ?? ''),
+            'pay_url' => toStr($j['payment_link']?? ''),
+            'ref' => toStr($j['authority']?? ''),
             'card' => $card,
             'error' => '',
             // کیوب‌پی چند ریال به مبلغ اضافه می‌کند؛ همین عدد باید واریز شود
-            'pay_amount' => (int)($j['pay_amount'] ?? $a['gateway_amount']),
-            'expires_at' => (string)($j['expires_at'] ?? ''),
+            'pay_amount' => toInt($j['pay_amount']?? $a['gateway_amount']),
+            'expires_at' => toStr($j['expires_at']?? ''),
         ];
     }
 
     public static function verify(array $gw, array $order): array
     {
         $r = ['ok' => false, 'ref_id' => '', 'amount' => 0, 'error' => ''];
-        $token = trim((string)($gw['api_key'] ?? ''));
+        $token = trim(toStr($gw['api_key']?? ''));
         $resp = PayHttp::call(self::base($gw) . '/smspay/api/verify-payment.php',
-            ['authority' => (string)$order['ref_id']], ['Authorization: Bearer ' . $token]);
+            ['authority' => toStr($order['ref_id'] ?? '')], ['Authorization: Bearer ' . $token]);
 
         $st = (string)PayHttp::dig($resp['json'], 'status', '');
         if (!empty($resp['json']['success']) && $st === 'verified') {
@@ -353,9 +360,9 @@ class PayCubepy implements PayDriver
             $r['amount'] = (int)PayHttp::dig($resp['json'], 'amount', 0);
             return $r;
         }
-        if ((int)$resp['status'] === 409) { $r['error'] = 'این فاکتور قبلاً یک‌بار تأیید شده است'; return $r; }
-        if ((int)$resp['status'] === 402) { $r['error'] = 'هنوز واریزی ثبت نشده است'; return $r; }
-        if ((int)$resp['status'] === 410) { $r['error'] = 'مهلت پرداخت تمام شده است'; return $r; }
+        if (toInt($resp['status'] ?? 0) === 409) { $r['error'] = 'این فاکتور قبلاً یک‌بار تأیید شده است'; return $r; }
+        if (toInt($resp['status'] ?? 0) === 402) { $r['error'] = 'هنوز واریزی ثبت نشده است'; return $r; }
+        if (toInt($resp['status'] ?? 0) === 410) { $r['error'] = 'مهلت پرداخت تمام شده است'; return $r; }
         $r['error'] = $resp['error'] !== '' ? $resp['error'] : (string)(PayHttp::dig($resp['json'], 'message', 'تأیید ناموفق بود'));
         return $r;
     }
@@ -365,15 +372,15 @@ class PayCubepy implements PayDriver
         $j = json_decode($raw, true);
         $j = is_array($j) ? $j : $in;
         return [
-            'ref' => (string)($j['authority'] ?? $in['authority'] ?? ''),
-            'paid' => !empty($j['success']) || (string)($j['status'] ?? '') === 'paid',
-            'amount' => (int)($j['amount'] ?? 0),
+            'ref' => toStr($j['authority']?? $in['authority'] ?? ''),
+            'paid' => !empty($j['success']) || toStr($j['status']?? '') === 'paid',
+            'amount' => toInt($j['amount']?? 0),
         ];
     }
 
     public static function base(array $gw): string
     {
-        $b = trim((string)($gw['base_url'] ?? ''));
+        $b = trim(toStr($gw['base_url']?? ''));
         return $b !== '' ? rtrim($b, '/') : 'https://cubevps.ir';
     }
 }
@@ -394,49 +401,49 @@ class PayTetra implements PayDriver
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $key = trim((string)($gw['api_key'] ?? ''));
+        $key = trim(toStr($gw['api_key']?? ''));
         if ($key === '') { $r['error'] = 'ApiKey تتراپی تنظیم نشده است'; return $r; }
 
         // مستندات: ApiKey, Hash_id, Amount(ریال), Description, Mobile, CallbackURL
         $resp = PayHttp::call(self::base($gw) . '/api/create_order', [
             'ApiKey'       => $key,
-            'Hash_id'      => (string)$a['order_id'],
-            'Amount'       => (int)$a['gateway_amount'],
-            'Description'  => (string)$a['desc'],
-            'Mobile'       => (string)($a['mobile'] ?? ''),
-            'CallbackURL'  => (string)$a['callback_url'],
+            'Hash_id'      => toStr($a['order_id'] ?? ''),
+            'Amount'       => toInt($a['gateway_amount'] ?? 0),
+            'Description'  => toStr($a['desc'] ?? ''),
+            'Mobile'       => toStr($a['mobile']?? ''),
+            'CallbackURL'  => toStr($a['callback_url'] ?? ''),
         ], [], 'POST');
 
-        $status = (string)($resp['json']['status'] ?? '');
-        $auth = (string)($resp['json']['Authority'] ?? '');
+        $status = toStr($resp['json']['status']?? '');
+        $auth = toStr($resp['json']['Authority']?? '');
         if ($status !== '100' || $auth === '') {
             $r['error'] = $resp['error'] !== '' ? $resp['error'] : 'تتراپی کد ' . $status . ' برگرداند';
             return $r;
         }
         $mode = PayGws::setting($gw, 'pay_mode', 'bot');
         $url = $mode === 'web'
-            ? (string)($resp['json']['payment_url_web'] ?? '')
-            : (string)($resp['json']['payment_url_bot'] ?? '');
+            ? toStr($resp['json']['payment_url_web']?? '')
+            : toStr($resp['json']['payment_url_bot']?? '');
         if ($url === '') $url = self::base($gw) . '/payment/' . $auth;
         return ['ok' => true, 'pay_url' => $url, 'ref' => $auth, 'card' => [], 'error' => '',
-            'tracking_id' => (string)($resp['json']['tracking_id'] ?? '')];
+            'tracking_id' => toStr($resp['json']['tracking_id']?? '')];
     }
 
     public static function verify(array $gw, array $order): array
     {
         $r = ['ok' => false, 'ref_id' => '', 'amount' => 0, 'error' => ''];
-        $key = trim((string)($gw['api_key'] ?? ''));
+        $key = trim(toStr($gw['api_key']?? ''));
         $resp = PayHttp::call(self::base($gw) . '/api/verify', [
             'ApiKey'   => $key,
-            'authority' => (string)$order['ref_id'],
-            'Hash_id'  => (string)$order['order_id'],
+            'authority' => toStr($order['ref_id'] ?? ''),
+            'Hash_id'  => toStr($order['order_id'] ?? ''),
         ], [], 'POST');
 
-        $status = (string)($resp['json']['status'] ?? '');
+        $status = toStr($resp['json']['status']?? '');
         if ($status === '100') {
             $r['ok'] = true;
-            $r['ref_id'] = (string)($resp['json']['tracking_id'] ?? $resp['json']['Authority'] ?? '');
-            $r['amount'] = (int)($resp['json']['Amount'] ?? 0);
+            $r['ref_id'] = toStr($resp['json']['tracking_id']?? $resp['json']['Authority'] ?? '');
+            $r['amount'] = toInt($resp['json']['Amount']?? 0);
             return $r;
         }
         $r['error'] = $resp['error'] !== '' ? $resp['error'] : 'تتراپی کد ' . ($status !== '' ? $status : '؟') . ' برگرداند';
@@ -448,15 +455,15 @@ class PayTetra implements PayDriver
         $j = json_decode($raw, true);
         $j = is_array($j) ? $j : $in;
         return [
-            'ref' => (string)($j['hashid'] ?? $j['Hash_id'] ?? $in['hashid'] ?? ''),
-            'paid' => (string)($j['status'] ?? '') === '100',
-            'amount' => (int)($j['amount'] ?? $j['Amount'] ?? 0),
+            'ref' => toStr($j['hashid']?? $j['Hash_id'] ?? $in['hashid'] ?? ''),
+            'paid' => toStr($j['status']?? '') === '100',
+            'amount' => toInt($j['amount']?? $j['Amount'] ?? 0),
         ];
     }
 
     public static function base(array $gw): string
     {
-        $b = trim((string)($gw['base_url'] ?? ''));
+        $b = trim(toStr($gw['base_url']?? ''));
         return $b !== '' ? rtrim($b, '/') : 'https://tetra98.ir';
     }
 }
@@ -477,15 +484,15 @@ class PayAban implements PayDriver
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $token = trim((string)($gw['api_key'] ?? ''));
+        $token = trim(toStr($gw['api_key']?? ''));
         if ($token === '') { $r['error'] = 'توکن آبان گیت وی تنظیم نشده است'; return $r; }
 
         $payload = [
-            'amount_rial'  => (int)$a['gateway_amount'],
-            'order_id'     => (string)$a['order_id'],
-            'callback_url' => (string)$a['callback_url'],
-            'description'  => (string)$a['desc'],
-            'metadata'     => ['telegram_user_id' => (string)($a['user_id'] ?? '')],
+            'amount_rial'  => toInt($a['gateway_amount'] ?? 0),
+            'order_id'     => toStr($a['order_id'] ?? ''),
+            'callback_url' => toStr($a['callback_url'] ?? ''),
+            'description'  => toStr($a['desc'] ?? ''),
+            'metadata'     => ['telegram_user_id' => toStr($a['user_id']?? '')],
         ];
         $exp = (int)PayGws::setting($gw, 'expiry_minutes', 0);
         if ($exp >= 1 && $exp <= 1440) $payload['expiry_minutes'] = $exp;
@@ -499,28 +506,28 @@ class PayAban implements PayDriver
         $card = [];
         if (!empty($resp['json']['card_number'])) {
             $card = [
-                'number' => (string)$resp['json']['card_number'],
-                'holder' => (string)($resp['json']['card_holder'] ?? ''),
-                'sheba'  => (string)($resp['json']['iban'] ?? ''),
+                'number' => toStr($resp['json']['card_number'] ?? ''),
+                'holder' => toStr($resp['json']['card_holder']?? ''),
+                'sheba'  => toStr($resp['json']['iban']?? ''),
             ];
         }
         return [
             'ok' => true,
-            'pay_url' => (string)($resp['json']['payment_url'] ?? ''),
+            'pay_url' => toStr($resp['json']['payment_url']?? ''),
             'ref' => $inv,
             'card' => $card,
             'error' => '',
             // payable_rial همان چیزی است که خریدار باید بی‌دقت واریز کند
-            'pay_amount' => (int)($resp['json']['payable_rial'] ?? $a['gateway_amount']),
-            'expires_at' => (string)($resp['json']['expires_at'] ?? ''),
+            'pay_amount' => toInt($resp['json']['payable_rial']?? $a['gateway_amount']),
+            'expires_at' => toStr($resp['json']['expires_at']?? ''),
         ];
     }
 
     public static function verify(array $gw, array $order): array
     {
         $r = ['ok' => false, 'ref_id' => '', 'amount' => 0, 'error' => ''];
-        $token = trim((string)($gw['api_key'] ?? ''));
-        $resp = PayHttp::call(self::base($gw) . '/api/v1/invoices/' . rawurlencode((string)$order['ref_id']) . '/verify',
+        $token = trim(toStr($gw['api_key']?? ''));
+        $resp = PayHttp::call(self::base($gw) . '/api/v1/invoices/' . rawurlencode(toStr($order['ref_id'] ?? '')) . '/verify',
             [], ['Authorization: Bearer ' . $token]);
 
         if (!empty($resp['json']['verified'])) {
@@ -543,18 +550,18 @@ class PayAban implements PayDriver
     {
         $j = json_decode($raw, true);
         $j = is_array($j) ? $j : $in;
-        $st = (string)($j['status'] ?? $in['status'] ?? '');
-        $inv = (string)($j['invoice_id'] ?? $j['order_id'] ?? $in['invoice_id'] ?? '');
+        $st = toStr($j['status']?? $in['status'] ?? '');
+        $inv = toStr($j['invoice_id']?? $j['order_id'] ?? $in['invoice_id'] ?? '');
         return [
             'ref' => $inv,
             'paid' => in_array($st, ['paid', 'verified', 'partially_paid'], true),
-            'amount' => (int)($j['amount_rial'] ?? $j['payable_rial'] ?? 0),
+            'amount' => toInt($j['amount_rial']?? $j['payable_rial'] ?? 0),
         ];
     }
 
     public static function base(array $gw): string
     {
-        $b = trim((string)($gw['base_url'] ?? ''));
+        $b = trim(toStr($gw['base_url']?? ''));
         return $b !== '' ? rtrim($b, '/') : 'https://abangateway.ir';
     }
 }
@@ -578,14 +585,14 @@ class PayGeneric implements PayDriver
 
     public static function hasVerify(array $gw): bool
     {
-        return trim((string)PayGws::setting($gw, 'verify_path', '')) !== '';
+        return trim(PayGws::text($gw, 'verify_path', '')) !== '';
     }
 
     public static function create(array $gw, array $a): array
     {
         $r = ['ok' => false, 'pay_url' => '', 'ref' => '', 'card' => [], 'error' => ''];
-        $base = rtrim(trim((string)($gw['base_url'] ?? '')), '/');
-        $path = trim((string)PayGws::setting($gw, 'create_path', ''));
+        $base = rtrim(trim(toStr($gw['base_url']?? '')), '/');
+        $path = trim(PayGws::text($gw, 'create_path', ''));
         if ($base === '' || $path === '') {
             $r['error'] = 'آدرس پایه یا مسیر ساخت فاکتور برای درگاه دلخواه تنظیم نشده است';
             return $r;
@@ -596,45 +603,45 @@ class PayGeneric implements PayDriver
         if (!is_array($map)) $map = [];
         $payload = [];
         foreach ($map as $remote => $local) {
-            $val = match ((string)$local) {
-                'amount'     => (int)$a['gateway_amount'],
-                'order'      => (string)$a['order_id'],
-                'callback'   => (string)$a['callback_url'],
-                'desc'       => (string)$a['desc'],
-                'user'       => (string)($a['user_id'] ?? ''),
-                'email'      => (string)($a['email'] ?? ''),
-                default      => (string)$local,
+            $val = match (toStr($local)) {
+                'amount'     => toInt($a['gateway_amount'] ?? 0),
+                'order'      => toStr($a['order_id'] ?? ''),
+                'callback'   => toStr($a['callback_url'] ?? ''),
+                'desc'       => toStr($a['desc'] ?? ''),
+                'user'       => toStr($a['user_id']?? ''),
+                'email'      => toStr($a['email']?? ''),
+                default      => toStr($local),
             };
-            $payload[(string)$remote] = $val;
+            $payload[toStr($remote)] = $val;
         }
-        if (!$payload) $payload = ['amount' => (int)$a['gateway_amount'], 'order_id' => (string)$a['order_id']];
+        if (!$payload) $payload = ['amount' => toInt($a['gateway_amount'] ?? 0), 'order_id' => toStr($a['order_id'] ?? '')];
 
         $headers = [];
-        $authStyle = (string)PayGws::setting($gw, 'auth_style', 'bearer');
-        $key = trim((string)($gw['api_key'] ?? ''));
+        $authStyle = PayGws::text($gw, 'auth_style', 'bearer');
+        $key = trim(toStr($gw['api_key']?? ''));
         if ($key !== '') {
             $headers[] = match ($authStyle) {
-                'header'  => trim((string)PayGws::setting($gw, 'auth_header', 'X-API-Key')) . ': ' . $key,
+                'header'  => trim(PayGws::text($gw, 'auth_header', 'X-API-Key')) . ': ' . $key,
                 'query'   => '',
                 'body'    => '',
                 default   => 'Authorization: Bearer ' . $key,
             };
         }
-        $ct = (string)PayGws::setting($gw, 'content_type', 'json');
+        $ct = PayGws::text($gw, 'content_type', 'json');
         if ($ct === 'form') {
             $headers[] = 'Content-Type: application/x-www-form-urlencoded';
             $headers[] = 'X-Pay-Form: 1';
         }
         if ($authStyle === 'query' && $key !== '') {
-            $base .= (strpos($base, '?') === false ? '?' : '&') . rawurlencode((string)PayGws::setting($gw, 'auth_query', 'api_key')) . '=' . rawurlencode($key);
+            $base .= (strpos($base, '?') === false ? '?' : '&') . rawurlencode(PayGws::text($gw, 'auth_query', 'api_key')) . '=' . rawurlencode($key);
         }
 
         $isJson = $ct !== 'form';
         $resp = PayHttp::call($base . $path, $payload, $headers, 'POST');
         $j = $resp['json'];
 
-        $refPath = (string)PayGws::setting($gw, 'ref_path', 'id');
-        $urlPath = (string)PayGws::setting($gw, 'url_path', 'pay_url');
+        $refPath = PayGws::text($gw, 'ref_path', 'id');
+        $urlPath = PayGws::text($gw, 'url_path', 'pay_url');
         $ref = (string)PayHttp::dig($j, $refPath, '');
         $url = (string)PayHttp::dig($j, $urlPath, '');
         if ($url === '' && $ref !== '') $url = $base . PayGws::setting($gw, 'url_suffix', '/pay/') . $ref;
@@ -644,7 +651,7 @@ class PayGeneric implements PayDriver
             return $r;
         }
         $card = [];
-        $cn = (string)PayGws::setting($gw, 'card_path', '');
+        $cn = PayGws::text($gw, 'card_path', '');
         if ($cn !== '') {
             $card = [
                 'number' => (string)PayHttp::dig($j, $cn, ''),
@@ -657,24 +664,24 @@ class PayGeneric implements PayDriver
     public static function verify(array $gw, array $order): array
     {
         $r = ['ok' => false, 'ref_id' => '', 'amount' => 0, 'error' => ''];
-        $base = rtrim(trim((string)($gw['base_url'] ?? '')), '/');
-        $path = trim((string)PayGws::setting($gw, 'verify_path', ''));
+        $base = rtrim(trim(toStr($gw['base_url']?? '')), '/');
+        $path = trim(PayGws::text($gw, 'verify_path', ''));
         if ($path === '') { $r['error'] = 'مسیر تأیید برای درگاه دلخواه تنظیم نشده است'; return $r; }
 
         $headers = [];
-        $key = trim((string)($gw['api_key'] ?? ''));
+        $key = trim(toStr($gw['api_key']?? ''));
         if ($key !== '') $headers[] = 'Authorization: Bearer ' . $key;
-        $payload = [(string)PayGws::setting($gw, 'ref_field', 'id') => (string)$order['ref_id']];
+        $payload = [PayGws::text($gw, 'ref_field', 'id') => toStr($order['ref_id'] ?? '')];
 
         $resp = PayHttp::call($base . $path, $payload, $headers, 'POST');
         $j = $resp['json'];
         $okVal = PayGws::setting($gw, 'ok_values', ['paid', 'verified', 'success', 'ok']);
         $okVal = is_array($okVal) ? array_map('strval', $okVal) : ['paid', 'verified', 'success'];
-        $st = strtolower((string)PayHttp::dig($j, (string)PayGws::setting($gw, 'status_path', 'status'), ''));
+        $st = strtolower((string)PayHttp::dig($j, PayGws::text($gw, 'status_path', 'status'), ''));
         if ($st !== '' && in_array($st, $okVal, true)) {
             $r['ok'] = true;
-            $r['ref_id'] = (string)PayHttp::dig($j, (string)PayGws::setting($gw, 'ref_id_path', 'ref_id'), '');
-            $r['amount'] = (int)PayHttp::dig($j, (string)PayGws::setting($gw, 'amount_path', 'amount'), 0);
+            $r['ref_id'] = (string)PayHttp::dig($j, PayGws::text($gw, 'ref_id_path', 'ref_id'), '');
+            $r['amount'] = (int)PayHttp::dig($j, PayGws::text($gw, 'amount_path', 'amount'), 0);
         } else {
             $r['error'] = $resp['error'] !== '' ? $resp['error']
                 : ($st !== '' ? 'وضعیت درگاه: ' . $st : 'تأیید ناموفق بود');
@@ -688,14 +695,14 @@ class PayGeneric implements PayDriver
         $j = is_array($j) ? $j : $in;
         $okVal = PayGws::setting($gw, 'ok_values', ['paid', 'verified', 'success', 'ok']);
         $okVal = is_array($okVal) ? array_map('strval', $okVal) : ['paid', 'verified', 'success'];
-        $st = strtolower((string)PayHttp::dig($j, (string)PayGws::setting($gw, 'status_path', 'status'), ''));
+        $st = strtolower((string)PayHttp::dig($j, PayGws::text($gw, 'status_path', 'status'), ''));
         $map = PayGws::setting($gw, 'field_map', []);
         $refField = 'order';
-        if (is_array($map)) foreach ($map as $remote => $local) if ((string)$local === 'order') { $refField = (string)$remote; break; }
+        if (is_array($map)) foreach ($map as $remote => $local) if (toStr($local) === 'order') { $refField = toStr($remote); break; }
         return [
-            'ref' => (string)($j[$refField] ?? $in[$refField] ?? $in['ref'] ?? ''),
+            'ref' => toStr($j[$refField]?? $in[$refField] ?? $in['ref'] ?? ''),
             'paid' => in_array($st, $okVal, true),
-            'amount' => (int)PayHttp::dig($j, (string)PayGws::setting($gw, 'amount_path', 'amount'), 0),
+            'amount' => (int)PayHttp::dig($j, PayGws::text($gw, 'amount_path', 'amount'), 0),
         ];
     }
 }

@@ -10,33 +10,99 @@ function h(?string $s): string
     return htmlspecialchars((string)$s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+/**
+ * تبدیل امن هر نوعی به رشتهٔ عددی.
+ *
+ * چرا لازم است: این توابع هر جای پروژه صدا زده می‌شوند و ورودی‌شان ممکن است
+ * از دیتابیس، JSON درگاه پرداخت یا آرگومان cmd بیاید. اگر یک‌بار آرایه یا
+ * شیء برسد، PHP یک warning می‌دهد که در لاگ تلگرام گم می‌شود و نتیجه‌اش متنِ
+ * «Array» داخل پیام کاربر است — همان «کار نمی‌کند» بی‌صدا.
+ */
+function numStr($n): string
+{
+    if (is_int($n)) return (string)$n;
+    if (is_bool($n)) return $n ? '1' : '0';
+    if (is_float($n)) {
+        if (!is_finite($n)) return '0';                       // INF / NAN
+        if ($n == (int)$n && abs($n) < 9.0e18) return (string)(int)$n;
+        $s = rtrim(rtrim(number_format($n, 4, '.', ''), '0'), '.');
+        return $s === '' || $s === '-' ? '0' : $s;
+    }
+    if (is_array($n) || is_object($n) || $n === null) return '0';
+    return (string)$n;
+}
+
+/** تبدیل امن هر نوعی به int (بدون warning و بدون TypeError) */
+function toInt($n, int $default = 0): int
+{
+    if (is_int($n)) return $n;
+    if (is_bool($n)) return $n ? 1 : 0;
+    if (is_float($n)) return is_finite($n) ? (int)$n : $default;
+    if (is_array($n) || is_object($n) || $n === null) return $default;
+    $s = trim((string)$n);
+    if ($s === '') return $default;
+    // رشته‌هایی مثل «۱۲۳» یا «12abc» نباید کل پروسه را بترکانند
+    if (!preg_match('/^[+-]?\d+/', $s, $m)) return $default;
+    return (int)$m[0];
+}
+
+/** تبدیل امن هر نوعی به float */
+function toFloat($n, float $default = 0.0): float
+{
+    if (is_float($n)) return is_finite($n) ? $n : $default;
+    if (is_int($n)) return (float)$n;
+    if (is_bool($n)) return $n ? 1.0 : 0.0;
+    if (is_array($n) || is_object($n) || $n === null) return $default;
+    $s = trim(str_replace(['٫', ','], '.', (string)$n));
+    if (!is_numeric($s)) return $default;
+    $f = (float)$s;
+    return is_finite($f) ? $f : $default;
+}
+
+/**
+ * تبدیل امن هر نوعی به رشته.
+ * آرایه/شیء/null ⇒ مقدار پیش‌فرض (به‌جای چاپ «Array» و یک warning PHP).
+ * برای دادهٔ JSON درگاه پرداخت که کاملاً در اختیار سرویس بیرونی است.
+ */
+function toStr($n, string $default = ''): string
+{
+    if (is_string($n)) return $n;
+    if (is_int($n)) return (string)$n;
+    if (is_float($n)) return is_finite($n) ? numStr($n) : $default;
+    if (is_bool($n)) return $n ? '1' : '0';
+    return $default;
+}
+
 /** عدد → رقم فارسی */
 function faNum($n): string
 {
-    $n = (string)$n;
-    return strtr($n, ['0' => '۰', '1' => '۱', '2' => '۲', '3' => '۳', '4' => '۴', '5' => '۵', '6' => '۶', '7' => '۷', '8' => '۸', '9' => '۹']);
-}
-
-/** درصد با یک رقم اعشار و جداکنندهٔ فارسی: 99.8 → ۹۹٫۸٪ */
-function faPct(?float $p): string
-{
-    if ($p === null) return '—';
-    return faNum(number_format($p, 1, '.', '')) . '٪';
+    return strtr(numStr($n), ['0' => '۰', '1' => '۱', '2' => '۲', '3' => '۳', '4' => '۴',
+        '5' => '۵', '6' => '۶', '7' => '۷', '8' => '۸', '9' => '۹', '-' => '−']);
 }
 
 /** نمایش زمان پاسخ: 234 → «۲۳۴ میلی‌ثانیه» ، 1234 → «۱٫۲ ثانیه» */
-function faMs(int $ms): string
+function faMs($ms): string
 {
+    $ms = toInt($ms);
     if ($ms <= 0) return '—';
     if ($ms < 1000) return faNum($ms) . ' میلی‌ثانیه';
     return faNum(number_format($ms / 1000, 1, '.', '')) . ' ثانیه';
 }
 
-/** «۱۲ ثانیه پیش» / «۳ دقیقه پیش» / «۲ ساعت پیش» / «۴ روز پیش» */
-function timeAgo(?string $datetime, float $tzOffset = 3.5): string
+/** درصد با یک رقم اعشار و جداکنندهٔ فارسی: 99.8 → ۹۹٫۸٪ */
+function faPct($p): string
 {
-    if (!$datetime) return 'هرگز';
-    $ts = strtotime($datetime);
+    if ($p === null || $p === '') return '—';
+    $f = toFloat($p, -1.0);
+    if ($f < 0) return '—';
+    return faNum(number_format(min(100.0, $f), 1, '.', '')) . '٪';
+}
+
+/** «۱۲ ثانیه پیش» / «۳ دقیقه پیش» / «۲ ساعت پیش» / «۴ روز پیش» */
+function timeAgo($datetime, float $tzOffset = 3.5): string
+{
+    if (empty($datetime) || !is_string($datetime) && !is_numeric($datetime)) return 'هرگز';
+    $ts = strtotime((string)$datetime);
     if ($ts === false) return '—';
     $diff = time() - $ts;
     if ($diff < 0) $diff = 0;
@@ -49,8 +115,9 @@ function timeAgo(?string $datetime, float $tzOffset = 3.5): string
 }
 
 /** نمایش مدت به ثانیه: 95 → «۱ دقیقه و ۳۵ ثانیه» */
-function faDuration(int $sec): string
+function faDuration($sec): string
 {
+    $sec = toInt($sec);
     if ($sec <= 0) return '۰ ثانیه';
     $parts = [];
     $d = intdiv($sec, 86400);
@@ -65,17 +132,20 @@ function faDuration(int $sec): string
 }
 
 /** «۲۰۲۶/۰۹/۲۷ ۱۲:۳۴:۵۶» */
-function faDateTime(?string $datetime, float $tzOffset = 3.5): string
+function faDateTime($datetime, float $tzOffset = 3.5): string
 {
-    if (!$datetime) return '—';
-    $ts = strtotime($datetime);
+    if (empty($datetime) || (!is_string($datetime) && !is_numeric($datetime))) return '—';
+    $ts = strtotime((string)$datetime);
     if ($ts === false) return '—';
     return faNum(date('Y/m/d H:i', $ts + (int)round($tzOffset * 3600)));
 }
 
 /** توکن تصادفی امن برای لینک اشتراکی */
-function makeShareToken(int $len = 20): string
+function makeShareToken($len = 20): string
 {
+    // تایپ هینت را عمداً int نگذاشته‌ایم: PHP برای تبدیل 1.5 به int یک
+    // deprecation می‌دهد و این تابع از ده‌ها جا با ورودی غیرعددی صدا زده می‌شود.
+    $len = max(4, min(128, toInt($len, 20)));
     $alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
     $out = '';
     $max = strlen($alphabet) - 1;
@@ -220,20 +290,28 @@ function statusUrl(array $cfg, string $shareToken): string
 /** فرمت شماره/مبلغ فارسی */
 function faMoney($n): string
 {
-    return faNum(number_format((int)$n, 0, '.', ',')) . ' تومان';
+    $i = toInt($n);
+    // مبلغ منفی یا غیرعددی نباید عدد عجیب نشان دهد
+    if ($i < 0) $i = 0;
+    return faNum(number_format($i, 0, '.', ',')) . ' تومان';
 }
 
 /** بریدن متن با حفظ ابتدا/انتها */
-function truncateFa(string $s, int $max = 60, string $tail = '…'): string
+function truncateFa($s, $max = 60, string $tail = '…'): string
 {
-    $s = trim(preg_replace('/\s+/u', ' ', $s) ?? $s);
-    if ($max <= 0 || mb_strlen($s) <= $max) return $s;
-    return mb_substr($s, 0, $max - 1) . $tail;
+    if (is_array($s) || is_object($s) || $s === null) $s = '';
+    $s = trim(preg_replace('/\s+/u', ' ', (string)$s) ?? (string)$s);
+    $max = toInt($max, 60);
+    if ($max <= 0) return $s;
+    if (mb_strlen($s) <= $max) return $s;
+    // اگر جای کافی برای «…» نیست، خودِ متن را برش بده
+    return mb_substr($s, 0, max(1, $max - mb_strlen($tail))) . $tail;
 }
 
 /** «۱۲ روز و ۳ ساعت» برای انقضا — ورودی: ثانیهٔ باقی‌مانده */
-function faLeft(int $sec): string
+function faLeft($sec): string
 {
+    $sec = toInt($sec);
     if ($sec < 0) return 'منقضی شده';
     $d = intdiv($sec, 86400);
     $h = intdiv($sec % 86400, 3600);
@@ -244,20 +322,20 @@ function faLeft(int $sec): string
 }
 
 /** تاریخ شمسی نیست؛ فقط «۲۰۲۶/۰۱/۰۵» از یک رشتهٔ تاریخ MySQL */
-function faDay(?string $datetime, float $tzOffset = 3.5): string
+function faDay($datetime, float $tzOffset = 3.5): string
 {
-    if (!$datetime) return '—';
-    $ts = strtotime($datetime);
+    if (empty($datetime) || (!is_string($datetime) && !is_numeric($datetime))) return '—';
+    $ts = strtotime((string)$datetime);
     if ($ts === false) return '—';
     return faNum(date('Y/m/d', $ts + (int)round($tzOffset * 3600)));
 }
 
 /** نوار درصد متنی برای تلگرام: 100 → ██████████ */
-function progressBar(?float $pct, int $len = 10): string
+function progressBar($pct, $len = 10): string
 {
-    $len = max(3, $len);
-    if ($pct === null) return str_repeat('░', $len);
-    $p = max(0.0, min(100.0, (float)$pct));
+    $len = max(3, min(80, toInt($len, 10)));
+    if ($pct === null || $pct === '') return str_repeat('░', $len);
+    $p = max(0.0, min(100.0, toFloat($pct)));
     $fill = (int)round($p / 100 * $len);
     $out = $fill <= 0 ? '' : ($fill >= $len ? str_repeat('█', $len) : str_repeat('█', $fill - 1) . '▌');
     $used = function_exists('mb_strlen') ? mb_strlen($out) : strlen($out);
@@ -293,17 +371,15 @@ function parseCommand(string $text): array
     ];
 }
 
-/**
- * ساخت توکن یکتا در یک ستون (بدون نیاز به rand برخوردی).
- * @param callable(string):bool $exists
- */
-function uniqueToken(int $len, callable $exists): string
+/** ساخت توکن یکتا در یک ستون (بدون نیاز به rand برخوردی). */
+function uniqueToken($len, callable $exists): string
 {
+    $len = max(4, min(64, toInt($len, 20)));
     for ($i = 0; $i < 12; $i++) {
         $t = makeShareToken($len);
         if (!$exists($t)) return $t;
     }
-    return makeShareToken($len + 10);
+    return makeShareToken(min(96, $len + 10));
 }
 
 /** نام کوتاه دامنه برای نمایش */

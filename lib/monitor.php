@@ -193,7 +193,7 @@ class Monitor
                 // بدنه فقط وقتی لازم است که کاربر «کلیدواژه» تعیین کرده باشد
                 CURLOPT_WRITEFUNCTION => function ($ch, $chunk) use ($buf, $needBody): int {
                     $n = strlen($chunk);
-                    if (!$needBody) return 0;               // فقط سرآخواست لازم است
+                    if (!$needBody) return $n;               // فقط سرآخواست لازم است؛ بدنه را دور بریز ولی به curl بگو همه بایت‌ها alındı
                     if (strlen($buf->body) + $n > self::BODY_LIMIT) {
                         $buf->body .= substr($chunk, 0, max(0, self::BODY_LIMIT - strlen($buf->body)));
                         $buf->trunc = true;
@@ -273,9 +273,12 @@ class Monitor
         $out = [];
         $pending = [];
         foreach ($sites as $s) {
+            if (!is_array($s) || !isset($s['id'])) continue;
             $id = (int)$s['id'];
-            $host = $s['host'];
-            $port = (int)$s['port'];
+            if ($id <= 0) continue;
+            $host = (string)($s['host'] ?? '');
+            if ($host === '') { $out[$id] = self::fail('هاست نامعتبر'); continue; }
+            $port = (int)($s['port'] ?? 0);
             if ($port <= 0) {
                 $out[$id] = self::fail('پورتی تعیین نشده');
                 continue;
@@ -347,14 +350,16 @@ class Monitor
         $isWin = strtoupper(substr(PHP_OS, 0, 3)) === 'WIN';
         $procs = [];
         foreach ($sites as $s) {
-            $host = $s['host'];
+            if (!is_array($s) || !isset($s['id'])) continue;
+            $host = (string)($s['host'] ?? '');
+            if ($host === '') { $out[(int)$s['id']] = self::fail('هاست نامعتبر'); continue; }
             if (!preg_match('/^[a-zA-Z0-9\.\-:\[\]]+$/', $host)) {
                 $out[(int)$s['id']] = self::fail('هاست نامعتبر');
                 continue;
             }
             $cmd = $isWin
-                ? 'ping -n 1 -w 2000 ' . $host
-                : 'ping -c 1 -W 2 ' . $host;
+                ? 'ping -n 1 -w 2000 ' . escapeshellarg($host)
+                : 'ping -c 1 -W 2 ' . escapeshellarg($host);
             $spec = [1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
             $pipes = [];
             $proc = @proc_open($cmd, $spec, $pipes);
@@ -431,6 +436,7 @@ class Monitor
      */
     private static function record(array $site, array $res, array &$stats, string $now): void
     {
+        if (!isset($site['id']) || (int)$site['id'] <= 0) return;
         $id = (int)$site['id'];
         $ok = !empty($res['ok']);
         $ms = max(0, (int)($res['ms'] ?? 0));
@@ -465,8 +471,8 @@ class Monitor
             'last_ms' => $ms,
             'last_code' => $code,
             'last_error' => $err,
-            'total_checks' => (int)$site['total_checks'] + 1,
-            'total_fails' => (int)$site['total_fails'] + ($ok ? 0 : 1),
+            'total_checks' => (int)($site['total_checks'] ?? 0) + 1,
+            'total_fails' => (int)($site['total_fails'] ?? 0) + ($ok ? 0 : 1),
             'slow' => $isSlow ? 1 : 0,
         ];
 
@@ -587,14 +593,15 @@ class Monitor
         if (!Db::getBool('notify', true)) return false;
         $targets = self::notifyTargets($site);
         if (!$targets) return false;
-        $uid = (int)$site['user_id'];
+        $uid = (int)($site['user_id'] ?? 0);
 
-        $label = tgH($site['label'] ?: $site['target']);
+        $label = tgH((string)(($site['label'] ?? '') !== '' ? $site['label'] : ($site['target'] ?? 'سایت')));
         $tz = tzOffset();
         $nowFa = faNum(date('H:i:s', time() + (int)round($tz * 3600)));
         $chatId = (int)($site['chat_id'] ?? 0);
         $isGroup = Group::isGroupChat($chatId);
-        $hub = $isGroup ? Group::get($chatId) : null;
+        $hub = null;
+        if ($isGroup) { try { $hub = Group::get($chatId); } catch (Throwable $e) { $hub = null; } }
         $isChannel = $hub && (string)$hub['chat_type'] === 'channel';
 
         $header = '';
@@ -604,12 +611,13 @@ class Monitor
         }
 
         if ($kind === 'down' || $kind === 'down_repeat') {
+            $typeName = typeName((string)($site['type'] ?? 'http'));
             $text = "🔴 <b>هشدار قطعی سرویس</b>\n\n"
                 . "🔗 سایت: <code>{$label}</code>\n"
-                . "🧾 نوع: " . typeName($site['type']) . "\n"
+                . "🧾 نوع: " . $typeName . "\n"
                 . "⏰ زمان: {$nowFa}\n"
                 . "❌ دلیل: " . tgH($err !== '' ? $err : 'بدون پاسخ') . "\n"
-                . "🔁 چک‌های ناموفق پیاپی: " . faNum((int)$site['consecutive_fail'] + 1) . "\n"
+                . "🔁 چک‌های ناموفق پیاپی: " . faNum((int)($site['consecutive_fail'] ?? 0) + 1) . "\n"
                 . ($kind === 'down_repeat' ? "\n⏱ هشدار تکراری — سرویس همچنان قطع است." : '');
             if ($isGroup && !$isChannel) {
                 $m = Group::mentionAdmins($chatId, (string)($hub['mention'] ?? ''));
@@ -632,7 +640,8 @@ class Monitor
                     . "⏰ زمان: {$nowFa}";
             }
         } else {
-            $avg = Stats::uptime($site, 1)['pct'] ?? null;
+            $avg = null;
+            try { $avg = Stats::uptime($site, 1)['pct'] ?? null; } catch (Throwable $e) { $avg = null; }
             $text = "🟢 <b>سرویس دوباره برقرار شد</b>\n\n"
                 . "🔗 سایت: <code>{$label}</code>\n"
                 . "⌛️ مدت قطعی: " . faDuration(max(1, $outageSec)) . "\n"

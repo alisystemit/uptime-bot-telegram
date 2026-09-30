@@ -108,7 +108,9 @@ function upBox(array $site, int $days, string $label, float $tz): string
 /** نمودار میله‌ای ۳۰ روز اخیر */
 function dailyChart(array $site): string
 {
+    if (!$site || !isset($site['id'])) return '';
     $rows = Stats::daily($site, 30);
+    if (!$rows) return '';
     $bars = '';
     foreach ($rows as $d) {
         $cls = pctCls($d['pct']);
@@ -158,25 +160,27 @@ function incidentList(array $site): string
 
 function sslBlock(array $s): string
 {
+    if (!$s || !isset($s['target'])) return '';
     if (stripos((string)$s['target'], 'https://') !== 0) return '';
-    if ((string)$s['ssl_check_at'] === '') {
+    if ((string)($s['ssl_check_at'] ?? '') === '') {
         return '<div class="sec"><div class="dlabel">🔐 گواهی SSL</div><div class="norc">هنوز بررسی نشده است</div></div>';
     }
-    $d = (int)$s['ssl_days'];
-    $cls = $d <= 0 ? 'bad' : ($d <= (int)$s['ssl_warn_days'] ? 'warn' : 'great');
+    $d = (int)($s['ssl_days'] ?? -1);
+    $cls = $d <= 0 ? 'bad' : ($d <= (int)($s['ssl_warn_days'] ?? Db::getInt('ssl_warn_days', 14)) ? 'warn' : 'great');
     $out = '<div class="sec"><div class="dlabel">🔐 گواهی SSL</div>'
         . '<div class="up ' . $cls . '"><b>' . ($d < 0 ? '—' : faLeft($d * 86400)) . '</b><span>تا انقضا</span>'
-        . '<i>' . faDay($s['ssl_expires_at'], tzOffset()) . '</i></div>';
-    if (trim((string)$s['ssl_issuer']) !== '') $out .= '<div class="okline">🏛 ' . h((string)$s['ssl_issuer']) . '</div>';
-    if (trim((string)$s['ssl_error']) !== '') $out .= '<div class="errline">⚠️ ' . h((string)$s['ssl_error']) . '</div>';
-    $out .= '<div class="meta"><span>آخرین بررسی: <b>' . timeAgo($s['ssl_check_at'], tzOffset()) . '</b></span></div></div>';
+        . '<i>' . faDay((string)($s['ssl_expires_at'] ?? ''), tzOffset()) . '</i></div>';
+    if (trim((string)($s['ssl_issuer'] ?? '')) !== '') $out .= '<div class="okline">🏛 ' . h((string)$s['ssl_issuer']) . '</div>';
+    if (trim((string)($s['ssl_error'] ?? '')) !== '') $out .= '<div class="errline">⚠️ ' . h((string)$s['ssl_error']) . '</div>';
+    $out .= '<div class="meta"><span>آخرین بررسی: <b>' . timeAgo((string)($s['ssl_check_at'] ?? ''), tzOffset()) . '</b></span></div></div>';
     return $out;
 }
 
 function siteCard(array $s, float $tz): string
 {
+    if (!$s || !isset($s['id'])) return '';
     $state = siteState($s);
-    $st = $state === 'paused' ? 'paused' : (string)$s['status'];
+    $st = $state === 'paused' ? 'paused' : (string)($s['status'] ?? 'unknown');
     $emoji = ['up' => '🟢', 'down' => '🔴', 'slow' => '🟠', 'paused' => '⏸', 'unknown' => '🟡'][$state] ?? '⚪️';
     $name = ['up' => 'فعال', 'down' => 'قطع', 'slow' => 'کند', 'paused' => 'متوقف', 'unknown' => 'نامشخص'][$state] ?? $state;
 
@@ -184,34 +188,36 @@ function siteCard(array $s, float $tz): string
     $cnt = Stats::counters($s);
 
     $note = '';
-    $err = trim((string)$s['last_error']);
+    $err = trim((string)($s['last_error'] ?? ''));
     if ($st === 'down' && $err !== '') {
         $note = '<div class="errline">⚠️ ' . h($err) . '</div>';
     } elseif ($state === 'slow') {
-        $note = '<div class="slowline">🟠 پاسخ کند: ' . faMs((int)$s['last_ms']) . ' (حد مجاز ' . faMs((int)$s['max_ms']) . ')</div>';
-    } elseif ($st === 'up' && (int)$s['last_code'] > 0) {
-        $note = '<div class="okline">کد پاسخ: ' . faNum((int)$s['last_code']) . ' • زمان پاسخ: ' . faMs((int)$s['last_ms']) . '</div>';
+        $note = '<div class="slowline">🟠 پاسخ کند: ' . faMs((int)($s['last_ms'] ?? 0)) . ' (حد مجاز ' . faMs((int)($s['max_ms'] ?? 0)) . ')</div>';
+    } elseif ($st === 'up' && (int)($s['last_code'] ?? 0) > 0) {
+        $note = '<div class="okline">کد پاسخ: ' . faNum((int)$s['last_code']) . ' • زمان پاسخ: ' . faMs((int)($s['last_ms'] ?? 0)) . '</div>';
     } elseif ($st === 'paused') {
         $note = '<div class="pauseline">این سایت موقتاً از چک خارج شده است.</div>';
     }
 
     $thresholds = [];
-    if ((int)$s['max_ms'] > 0) $thresholds[] = '🎯 حد کندی: ' . faMs((int)$s['max_ms']);
-    if (trim((string)$s['keyword']) !== '') $thresholds[] = '🔎 کلیدواژه: ' . truncateFa((string)$s['keyword'], 40);
+    if ((int)($s['max_ms'] ?? 0) > 0) $thresholds[] = '🎯 حد کندی: ' . faMs((int)$s['max_ms']);
+    if (trim((string)($s['keyword'] ?? '')) !== '') $thresholds[] = '🔎 کلیدواژه: ' . truncateFa((string)$s['keyword'], 40);
     $thresholdsHtml = $thresholds ? '<div class="meta"><span>' . implode('</span><span>', array_map('h', $thresholds)) . '</span></div>' : '';
 
     $since = '';
-    if ((int)$s['last_down_duration'] > 0 && $state !== 'down') {
+    if ((int)($s['last_down_duration'] ?? 0) > 0 && $state !== 'down') {
         $since = '<span>آخرین توقف: ' . faDuration((int)$s['last_down_duration']) . '</span>';
     }
 
     $perf = '';
-    if ((int)$s['resp_avg'] > 0) {
+    if ((int)($s['resp_avg'] ?? 0) > 0) {
+        $minMs = 0;
+        try { $minMs = (int)(Db::val('SELECT MIN(`ms`) FROM `check_log` WHERE `site_id` = ? AND `ok` = 1 AND `ms` > 0 AND `ts` >= DATE_SUB(NOW(), INTERVAL 1 DAY)', [(int)$s['id']]) ?: 0); } catch (Throwable $e) { $minMs = 0; }
         $perf = '<div class="perf">'
-            . '<div><b>' . faMs((int)Db::val('SELECT MIN(`ms`) FROM `check_log` WHERE `site_id` = ? AND `ok` = 1 AND `ms` > 0 AND `ts` >= DATE_SUB(NOW(), INTERVAL 1 DAY)', [(int)$s['id']]) ?: 0) . '</b><span>کمینه</span></div>'
+            . '<div><b>' . faMs($minMs) . '</b><span>کمینه</span></div>'
             . '<div><b>' . faMs((int)$s['resp_avg']) . '</b><span>میانگین</span></div>'
-            . '<div><b>' . faMs((int)$s['resp_p95']) . '</b><span>صدک ۹۵</span></div>'
-            . '<div><b>' . faMs((int)$s['resp_max']) . '</b><span>بیشینه</span></div>'
+            . '<div><b>' . faMs((int)($s['resp_p95'] ?? 0)) . '</b><span>صدک ۹۵</span></div>'
+            . '<div><b>' . faMs((int)($s['resp_max'] ?? 0)) . '</b><span>بیشینه</span></div>'
             . '</div>';
     }
 

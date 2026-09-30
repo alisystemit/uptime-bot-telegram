@@ -133,6 +133,7 @@ class GroupBot
     /** پیام کانال (کانال‌ها پیام معمولی ندارند) */
     public function onChannelPost(array $post): void
     {
+        if (!$post) return;
         $chat = $post['chat'] ?? [];
         $this->chatId = (int)($chat['id'] ?? 0);
         $this->chatType = 'channel';
@@ -191,6 +192,7 @@ class GroupBot
         }
 
         $userId = $this->ensureUser();
+        if ($userId <= 0) return;
         $token = uniqueToken(20, static fn(string $t): bool => (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `share_token` = ?', [$t]) > 0);
         try {
             Db::q(

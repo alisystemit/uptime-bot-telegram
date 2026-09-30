@@ -87,14 +87,16 @@ class Page
      */
     public static function payload(array $ctx, bool $light = true): array
     {
+        if (!$ctx || !isset($ctx['sites']) || !is_array($ctx['sites'])) return ['ok' => false, 'error' => 'empty'];
         $tz = tzOffset();
         $summary = Stats::summaryOf($ctx['sites']);
         $engine = Stats::engine();
 
         $sites = [];
         foreach ($summary['sites'] as $s) {
+            if (!is_array($s) || !isset($s['id'])) continue;
             $state = siteState($s);
-            $st = $state === 'paused' ? 'paused' : (string)$s['status'];
+            $st = $state === 'paused' ? 'paused' : (string)($s['status'] ?? 'unknown');
             $u1 = Stats::uptime($s, 1);
             $u7 = Stats::uptime($s, 7);
             $u30 = Stats::uptime($s, 30);
@@ -106,13 +108,13 @@ class Page
                 return ['pct' => $p, 'cls' => $cls, 'checks' => (int)$u['checks']];
             };
 
-            $err = trim((string)$s['last_error']);
+            $err = trim((string)($s['last_error'] ?? ''));
             if ($st === 'down' && $err !== '') {
                 $note = '<div class="errline">⚠️ ' . h($err) . '</div>';
             } elseif ($state === 'slow') {
-                $note = '<div class="slowline">🟠 پاسخ کند: ' . faMs((int)$s['last_ms']) . ' (حد ' . faMs((int)$s['max_ms']) . ')</div>';
-            } elseif ($st === 'up' && (int)$s['last_code'] > 0) {
-                $note = '<div class="okline">کد پاسخ: ' . faNum((int)$s['last_code']) . ' • زمان پاسخ: ' . faMs((int)$s['last_ms']) . '</div>';
+                $note = '<div class="slowline">🟠 پاسخ کند: ' . faMs((int)($s['last_ms'] ?? 0)) . ' (حد ' . faMs((int)($s['max_ms'] ?? 0)) . ')</div>';
+            } elseif ($st === 'up' && (int)($s['last_code'] ?? 0) > 0) {
+                $note = '<div class="okline">کد پاسخ: ' . faNum((int)$s['last_code']) . ' • زمان پاسخ: ' . faMs((int)($s['last_ms'] ?? 0)) . '</div>';
             } elseif ($st === 'paused') {
                 $note = '<div class="pauseline">این سایت موقتاً از چک خارج شده است.</div>';
             } else {
@@ -121,18 +123,18 @@ class Page
 
             $row = [
                 'id'           => (int)$s['id'],
-                'label'        => (string)($s['label'] !== '' ? $s['label'] : $s['target']),
-                'target'       => (string)$s['target'],
-                'type'         => (string)$s['type'],
+                'label'        => (string)(($s['label'] ?? '') !== '' ? $s['label'] : ($s['target'] ?? '')),
+                'target'       => (string)($s['target'] ?? ''),
+                'type'         => (string)($s['type'] ?? 'http'),
                 'state'        => $state,
                 'cls'          => stateClass($state),
                 'status_label' => ['up' => 'فعال', 'down' => 'قطع', 'slow' => 'کند', 'paused' => 'متوقف', 'unknown' => 'نامشخص'][$state] ?? $state,
                 'status'       => $st,
-                'ms'           => (int)$s['last_ms'],
-                'code'         => (int)$s['last_code'],
+                'ms'           => (int)($s['last_ms'] ?? 0),
+                'code'         => (int)($s['last_code'] ?? 0),
                 'error'        => $err,
-                'last_check'   => $s['last_check_at'],
-                'last_check_ago' => timeAgo($s['last_check_at'], $tz),
+                'last_check'   => $s['last_check_at'] ?? null,
+                'last_check_ago' => timeAgo((string)($s['last_check_at'] ?? ''), $tz),
                 'total_checks' => (int)$cnt['checks'],
                 'total_fails'  => (int)$cnt['fails'],
                 'u1'           => $mk($u1),
@@ -148,13 +150,13 @@ class Page
                 $row['hourly'] = self::hourlyFor($s);
                 $row['sparkline'] = Stats::sparkline(Stats::recent($s, 60));
                 $row['resp'] = [
-                    'min' => (int)$s['resp_avg'] > 0 ? Stats::responseStats($s)['min'] : 0,
-                    'avg' => (int)$s['resp_avg'],
-                    'p95' => (int)$s['resp_p95'],
-                    'max' => (int)$s['resp_max'],
+                    'min' => (int)($s['resp_avg'] ?? 0) > 0 ? (int)(Stats::responseStats($s)['min'] ?? 0) : 0,
+                    'avg' => (int)($s['resp_avg'] ?? 0),
+                    'p95' => (int)($s['resp_p95'] ?? 0),
+                    'max' => (int)($s['resp_max'] ?? 0),
                 ];
-                $row['max_ms'] = (int)$s['max_ms'];
-                $row['keyword'] = (string)$s['keyword'];
+                $row['max_ms'] = (int)($s['max_ms'] ?? 0);
+                $row['keyword'] = (string)($s['keyword'] ?? '');
                 $row['ssl'] = self::sslFor($s);
                 $row['incidents'] = self::incidentsFor($s);
             }
@@ -213,13 +215,14 @@ class Page
 
     public static function sslFor(array $s): array
     {
+        if (!$s) return ['checked' => false, 'days' => -1, 'expires' => null, 'issuer' => '', 'error' => '', 'ago' => '—'];
         return [
             'checked'  => (string)($s['ssl_check_at'] ?? '') !== '',
-            'days'     => (int)$s['ssl_days'],
+            'days'     => (int)($s['ssl_days'] ?? -1),
             'expires'  => $s['ssl_expires_at'] ?? null,
-            'issuer'   => (string)$s['ssl_issuer'],
-            'error'    => (string)$s['ssl_error'],
-            'ago'      => timeAgo($s['ssl_check_at'], tzOffset()),
+            'issuer'   => (string)($s['ssl_issuer'] ?? ''),
+            'error'    => (string)($s['ssl_error'] ?? ''),
+            'ago'      => timeAgo((string)($s['ssl_check_at'] ?? ''), tzOffset()),
         ];
     }
 

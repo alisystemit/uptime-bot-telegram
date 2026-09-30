@@ -20,7 +20,8 @@ class Ssl
         $host = trim($host);
         if ($host === '') { $out['error'] = 'میزبان خالی است'; return $out; }
         if (!function_exists('openssl_x509_parse')) { $out['error'] = 'افزونهٔ openssl روی هاست فعال نیست'; return $out; }
-        if (filter_var($host, FILTER_VALIDATE_IP) === false && $host[0] === '[') $host = trim($host, '[]');
+        if (isset($host[0]) && $host[0] === '[') $host = trim($host, '[]');
+        if ($port <= 0 || $port > 65535) $port = 443;
 
         $ctx = stream_context_create(['ssl' => [
             // اعتبارسنجی عمداً خاموش است: گواهی self-signed هم باید خوانده شود
@@ -202,8 +203,10 @@ class Domain
 
     private static function tld(string $domain): string
     {
+        if ($domain === '' || strpos($domain, '.') === false) return '';
         $parts = explode('.', $domain);
-        return $parts[count($parts) - 1] ?? '';
+        if (!$parts) return '';
+        return (string)end($parts);
     }
 
     private static function query(string $server, string $query, float $deadline): string

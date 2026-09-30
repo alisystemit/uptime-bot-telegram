@@ -61,11 +61,14 @@ trait PayUi
     /** ساخت فاکتور برای یک درگاه */
     private function payGatewayCreate(string $code, ?int $msgId = null): void
     {
+        if ($code === '') { $this->edit((int)$msgId, '❌ درگاه نامعتبر است.', $this->payGatewayMenu()); return; }
         $gw = PayGws::get($code);
         if (!$gw) {
             $this->edit((int)$msgId, '❌ چنین درگاهی وجود ندارد.', $this->payGatewayMenu());
             return;
         }
+        $cls = PayGws::driver($code);
+        if (!$cls || !class_exists($cls)) { $this->edit((int)$msgId, '❌ درایور این درگاه بارگذاری نشده.', $this->payGatewayMenu()); return; }
         $this->edit((int)$msgId, '⏳ در حال ساخت فاکتور…');
 
         $r = Pay::createOrder($this->uid, $code);
@@ -76,9 +79,9 @@ trait PayUi
         }
 
         $days = (int)($r['days'] ?? 30);
+        if ($days <= 0) $days = 30;
         $card = (array)($r['card'] ?? []);
         $kindMap = ['card' => 'کارت‌به‌کارت خودکار', 'crypto' => 'ارز دیجیتال', 'bank' => 'درگاه بانکی'];
-        $cls = PayGws::driver($code);
 
         $txt = "🧾 <b>فاکتور آمادهٔ پرداخت</b>\n\n"
             . "🏷 درگاه: " . PayGws::title($code) . " (" . ($kindMap[$cls::kind()] ?? '') . ")\n"
@@ -88,7 +91,9 @@ trait PayUi
 
         // مبلغ دقیق قابل واریز (بعضی درگاه‌ها چند ریال اضافه می‌کنند)
         $payAmt = (int)($r['pay_amount'] ?? 0);
-        $wantAmt = $cls::currency() === 'toman' ? (int)$payAmt : (int)$payAmt / 10;
+        $cur = 'rial';
+        try { $cur = $cls::currency(); } catch (Throwable $e) { $cur = 'rial'; }
+        $wantAmt = $cur === 'toman' ? (int)$payAmt : (int)floor((int)$payAmt / 10);
         if ($payAmt > 0 && $wantAmt !== (int)$r['amount']) {
             $txt .= "\n⚠️ <b>مبلغ دقیق قابل پرداخت: " . faNum($wantAmt) . " تومان</b>\n"
                 . "این سرویس برای تشخیص واریز، چند ریال به مبلغ اضافه می‌کند؛\n"

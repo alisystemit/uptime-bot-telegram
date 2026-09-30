@@ -1,24 +1,69 @@
+# ==============================================================
+#  قالب مانیتورینگ سرور (Uptime) — حفاظت از ریشهٔ وب
+#
+#  نکتهٔ مهم: این فایل فقط روی Apache کار می‌کند. اگر nginx داری، بخش
+#  «راهنمای nginx» در README.md را بخوان و همان قوانین را در سرور کانفیگ کن.
+# ==============================================================
+
 Options -Indexes
-<FilesMatch "(?i)(^\.|^error_log$|^hash\.txt$|^info$|\.(zip|sql|log|env|bak|tmp|err|ya?ml|sh|ini|conf|json|lock)$)">
+DirectoryIndex index.php
+
+# ----------------------------------------------------------------
+#  ۱) فایل‌های حساس (محتوای فایل با متنش مسدود می‌شود، نه خودِ درخواست)
+#     FilesMatch روی نام فایل (بدون مسیر) کار می‌کند، پس برای مسیرها
+#     از RewriteRule استفاده کرده‌ایم.
+# ----------------------------------------------------------------
+<FilesMatch "(?i)(^\.|^error_log$|^hash\.txt$|^info$|(^|,)config\.php$|^(composer|package)\.(json|lock)$|\.(zip|sql|log|env|bak|tmp|err|ya?ml|sh|ini|conf|json|lock|md)$)">
     Require all denied
 </FilesMatch>
 
-# منبع/ابزار داخلی ربات قابل دانلود نباشند (lib و cron فقط از طریق PHP اجرا می‌شوند)
+# ----------------------------------------------------------------
+#  ۲) مسیرهایی که هرگز نباید از وب قابل دسترسی باشند
+# ----------------------------------------------------------------
 <IfModule mod_rewrite.c>
     RewriteEngine On
-    # دسترسی مستقیم به فایل‌های کتابخانه
-    RewriteRule (^|/)lib/ - [F,L]
-    # لاگ‌ها و قفل‌ها
-    RewriteRule (^|/)logs(/|$) - [F,L]
-    RewriteRule (^|/)error_log$ - [F,L]
-    # مجموعهٔ تست (سرور قلابی درگاه، بنچمارک، تست‌ها)
-    RewriteRule (^|/)tests/ - [F,L]
+    RewriteBase /
+
+    # مخزن گیت / SVN / Mercurial  ← بدون این، .git/config با آدرس ریموت لو می‌رود
+    RewriteRule (^|/)\.(git|svn|hg)(/|$) - [F,L]
+
+    # کتابخانه‌ها و ابزارهای داخلی (فقط PHP آن‌ها را اجرا می‌کند)
+    RewriteRule (^|/)lib(/|$)   - [F,L]
+    RewriteRule (^|/)tools(/|$) - [F,L]
+    RewriteRule (^|/)tests(/|$) - [F,L]
+
+    # لاگ‌ها، قفل‌ها و وضعیت runtime
+    RewriteRule (^|/)logs(/|$)     - [F,L]
+    RewriteRule (^|/)error_log$     - [F,L]
+    RewriteRule (^|/)\.mock_state\.json$ - [F,L]
+
+    # اگر mod_rewrite خاموش باشد، این لایهٔ دوم کمک می‌کند
+    RewriteRule (^|/)vendor(/|$)  - [F,L]
+    RewriteRule (^|/)config\.php$ - [F,L]
 </IfModule>
 
-# این‌ها باید باز بمانند (نقطه‌های ورود وب):
+# ----------------------------------------------------------------
+#  ۳) لایهٔ دوم برای وقتی mod_rewrite فعال نیست
+# ----------------------------------------------------------------
+<IfModule !mod_rewrite.c>
+    <IfModule mod_alias.c>
+        RedirectMatch 404 ^(.*/)?\.(git|svn|hg)(/.*)?$
+        RedirectMatch 404 ^.*/(lib|tools|tests|logs|vendor)(/.*)?$
+        RedirectMatch 404 ^.*/config\.php$
+    </IfModule>
+</IfModule>
+
+# ----------------------------------------------------------------
+#  ۴) نقطه‌های ورود که باید باز بمانند:
 #   index.php   → وبهوک تلگرام
-#   table.php   → نصب جدول‌ها (با secret)
 #   status.php  → صفحهٔ وضعیت عمومی
 #   api.php     → JSON صفحهٔ وضعیت
 #   pay.php     → بازگشت خریدار و وب‌هوک درگاه‌های پرداخت
+#   table.php   → نصب/به‌روزرسانی جدول‌ها (با secret)
 #   cron/*.php  → کرون چک (با secret)
+#   config.php  → فقط include می‌شود، از وب گرفته نمی‌شود
+#
+#  نکتهٔ مهم: دستور <Directory> و <DirectoryMatch> در فایل .htaccess «مجاز
+#  نیست» و باعث خطای ۵۰۰ روی همهٔ درخواست‌ها می‌شود. برای خاموش‌کردن PHP
+#  داخل پوشه‌ها، داخل خودِ آن پوشه یک .htaccess بگذار (نمونه در README).
+# ----------------------------------------------------------------

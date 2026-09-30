@@ -53,7 +53,8 @@ class Bot
 
     private function ensureUser(array $from): ?array
     {
-        $uid = (int)$from['id'];
+        $uid = (int)($from['id'] ?? 0);
+        if ($uid <= 0) return null;
         $this->uid = $uid;
         $name = (string)($from['first_name'] ?? '') . ' ' . (string)($from['last_name'] ?? '');
         $username = (string)($from['username'] ?? '');
@@ -116,7 +117,11 @@ class Bot
     {
         if (!$this->u) return;
         $u = $this->u;
-        if ($u['plan'] === 'vip' && !empty($u['plan_until']) && strtotime($u['plan_until']) < time()) {
+        if (!is_array($u) || ($u['plan'] ?? '') !== 'vip') return;
+        if (empty($u['plan_until'])) return;
+        $exp = strtotime((string)$u['plan_until']);
+        if ($exp === false || $exp >= time()) return;
+        if (true) {
             Db::q("UPDATE `user` SET `plan` = 'free' WHERE `id` = ?", [$this->uid]);
             $this->u['plan'] = 'free';
             Db::logEvent($this->uid, 'plan_expired', '');
@@ -130,8 +135,12 @@ class Bot
 
     private function isVip(): bool
     {
-        if (!$this->u) return false;
-        return $this->u['plan'] === 'vip' && (empty($this->u['plan_until']) || strtotime($this->u['plan_until']) >= time());
+        if (!$this->u || !is_array($this->u)) return false;
+        if (($this->u['plan'] ?? '') !== 'vip') return false;
+        if (empty($this->u['plan_until'])) return true;
+        $t = strtotime((string)$this->u['plan_until']);
+        if ($t === false) return false;
+        return $t >= time();
     }
 
     private function maxSites(): int
@@ -162,7 +171,9 @@ class Bot
     private function onMessage(array $msg, array $from): void
     {
         $text = trim((string)($msg['text'] ?? ''));
+        if (!isset($msg['chat']['id'])) return;
         $this->chatId = $msg['chat']['id'];
+        if ((int)$this->chatId === 0) return;
 
         $user = $this->ensureUser($from);
         if ($user === null) {
@@ -447,7 +458,7 @@ class Bot
             return;
         }
         $norm = normalizeTarget($text);
-        if (!$norm['ok']) {
+        if (empty($norm['ok']) || empty($norm['target']) || empty($norm['type']) || empty($norm['host'])) {
             $this->send("❌ " . $norm['error'] . "\n\nدوباره تلاش کنید یا ❌ انصراف بزنید.", BotApi::kb([[['text' => '❌ انصراف']]]));
             return;
         }
@@ -473,6 +484,7 @@ class Bot
             return;
         }
         $siteId = (int)Db::val('SELECT `id` FROM `site` WHERE `user_id` = ? AND `target` = ?', [$this->uid, $norm['target']]);
+        if ($siteId <= 0) { $this->clearStep(); $this->send('❌ ثبت سایت ناموفق بود.', $this->mainMenu()); return; }
         $this->clearStep();
 
         // اولین چک همان لحظه تا کاربر نتیجه را ببیند
@@ -892,10 +904,12 @@ class Bot
     private function onPaymentProof(array $msg): void
     {
         $photo = null;
-        if (!empty($msg['photo'])) {
-            $sizes = $msg['photo'];
-            usort($sizes, fn($a, $b) => ($b['width'] ?? 0) <=> ($a['width'] ?? 0));
-            $photo = $sizes[0]['file_id'] ?? null;
+        if (!empty($msg['photo']) && is_array($msg['photo'])) {
+            $sizes = array_values(array_filter($msg['photo'], static fn($a) => is_array($a) && isset($a['file_id'])));
+            if ($sizes) {
+                usort($sizes, fn($a, $b) => ((int)($b['width'] ?? 0)) <=> ((int)($a['width'] ?? 0)));
+                $photo = $sizes[0]['file_id'] ?? null;
+            }
         } elseif (!empty($msg['document']['file_id'])) {
             $photo = $msg['document']['file_id'];
         } elseif (!empty($msg['text'])) {
@@ -939,7 +953,8 @@ class Bot
 
     private function pauseUser(): void
     {
-        if ((int)$this->u['paused'] === 1) { $this->send('همین حالا هم متوقف است.', $this->mainMenu()); return; }
+        if (!$this->u) return;
+        if ((int)($this->u['paused'] ?? 0) === 1) { $this->send('همین حالا هم متوقف است.', $this->mainMenu()); return; }
         Db::q('UPDATE `user` SET `paused` = 1, `paused_since` = NOW() WHERE `id` = ?', [$this->uid]);
         Db::logEvent($this->uid, 'pause_user', '');
         $this->send("⏸ <b>چک سایت‌های شما متوقف شد</b>\n\n"
@@ -949,8 +964,10 @@ class Bot
 
     private function resumeUser(): void
     {
-        if ((int)$this->u['paused'] === 0) { $this->send('همین حالا فعال است.', $this->mainMenu()); return; }
-        $since = $this->u['paused_since'] ? strtotime($this->u['paused_since']) : time();
+        if (!$this->u) return;
+        if ((int)($this->u['paused'] ?? 0) === 0) { $this->send('همین حالا فعال است.', $this->mainMenu()); return; }
+        $since = !empty($this->u['paused_since']) ? (int)strtotime((string)$this->u['paused_since']) : time();
+        if ($since <= 0) $since = time();
         $dur = max(0, time() - $since);
         Db::q('UPDATE `user` SET `paused` = 0, `paused_since` = NULL, `paused_total` = `paused_total` + ? WHERE `id` = ?', [$dur, $this->uid]);
         Db::logEvent($this->uid, 'resume_user', (string)$dur);
@@ -1067,11 +1084,15 @@ class Bot
 
     private function onCallback(array $cb): void
     {
+        if (!is_array($cb)) return;
         $data = (string)($cb['data'] ?? '');
-        $from = $cb['from'] ?? [];
-        $this->chatId = $cb['message']['chat']['id'] ?? ($from['id'] ?? 0);
+        $cbId = (string)($cb['id'] ?? '');   // update ناقص ⇒ ممکن است اصلاً نباشد
+        if ($data === '') { if ($cbId !== '') BotApi::answerCb($this->token, $cbId); return; }
+        $from = (array)($cb['from'] ?? []);
+        if (empty($from['id'])) { if ($cbId !== '') BotApi::answerCb($this->token, $cbId); return; }
+        $this->chatId = (int)($cb['message']['chat']['id'] ?? $from['id']);
         $msgId = (int)($cb['message']['message_id'] ?? 0);
-        BotApi::answerCb($this->token, (string)$cb['id']);
+        if ($cbId !== '') BotApi::answerCb($this->token, $cbId);
 
         $user = $this->ensureUser($from);
         if ($user === null) { $this->send('⛔️ ظرفیت ربات تکمیل است.'); return; }
@@ -1134,6 +1155,7 @@ class Bot
             // توجه: case 'buy' در بخش «درگاه‌های پرداخت» پایین‌تر پیاده شده است
             // تا اگر درگاهی فعال باشد، منوی انتخاب درگاه نشان داده شود.
             case 'tnotify':
+                if (!$this->u) { $this->edit($msgId, '❌ حساب پیدا نشد.', $this->mainMenu()); return; }
                 $cur = (int)$this->u['notify'];
                 Db::q('UPDATE `user` SET `notify` = ? WHERE `id` = ?', [$cur ? 0 : 1, $this->uid]);
                 $this->u['notify'] = $cur ? 0 : 1;
@@ -1785,6 +1807,7 @@ class Bot
 
     private function siteDetail(array $s): string
     {
+        if (!$s || !isset($s['id'])) return '❌ سایت پیدا نشد.';
         $u24 = Stats::uptime($s, 1);
         $u7 = Stats::uptime($s, 7);
         $u30 = Stats::uptime($s, 30);
@@ -1807,8 +1830,10 @@ class Bot
             . "<b>📈 عملکرد</b>\n"
             . "▫️ زمان پاسخ آخرین چک: " . faMs((int)$s['last_ms']) . "\n"
             . "▫️ میانگین ۲۴ ساعت: " . faMs($u24['avg_ms']) . "\n";
-        if ((int)$s['resp_avg'] > 0) {
-            $txt .= "▫️ کمینه/میانگین/بیشینه (۲۴س): " . faMs((int)Db::val('SELECT MIN(`ms`) FROM `check_log` WHERE `site_id` = ? AND ok = 1 AND ms > 0 AND ts >= DATE_SUB(NOW(), INTERVAL 1 DAY)', [(int)$s['id']]) ?: 0)
+        if ((int)($s['resp_avg'] ?? 0) > 0) {
+            $minMs = 0;
+            try { $minMs = (int)(Db::val('SELECT MIN(`ms`) FROM `check_log` WHERE `site_id` = ? AND ok = 1 AND ms > 0 AND ts >= DATE_SUB(NOW(), INTERVAL 1 DAY)', [(int)$s['id']]) ?: 0); } catch (Throwable $e) { $minMs = 0; }
+            $txt .= "▫️ کمینه/میانگین/بیشینه (۲۴س): " . faMs($minMs)
                 . " / " . faMs((int)$s['resp_avg']) . " / " . faMs((int)$s['resp_max']) . "\n"
                 . "▫️ صدک ۹۵: " . faMs((int)$s['resp_p95']) . "\n";
         }
@@ -1911,6 +1936,7 @@ class Bot
      */
     private function rankingText(): string
     {
+        if (!$this->u) return "📊 هنوز حسابی ثبت نشده است.";
         return Ranking::meText($this->u, $this->uid);
     }
 
@@ -2085,7 +2111,10 @@ class Bot
             . "▫️ توقف سایت‌ها: " . faNum($p['site_count']) . " بار — مجموع " . faDuration($p['site_total']) . " (الان: " . faNum($p['site_now']) . " سایت)\n"
             . "▫️ آخرین ادامه: " . ($p['last_resume'] ? timeAgo($p['last_resume'], tzOffset()) : '—') . "\n\n"
             . "<b>💰 اشتراک</b>\n"
-            . "▫️ حالت: " . ['open' => 'باز', 'code' => 'کد فعال‌سازی', 'paid' => 'پرداخت'][Db::get('access_mode', 'open')] . "\n"
+            // اگر access_mode مقدار ناشناخته‌ای داشته باشد (تایپ اشتباه مدیر یا
+            // ردیف خراب در settings) نباید خط پیام خالی یا هشدار PHP بدهد.
+            . "▫️ حالت: " . (['open' => 'باز', 'code' => 'کد فعال‌سازی', 'paid' => 'پرداخت'][Db::get('access_mode', 'open')]
+                ?? 'نامشخص (' . h(mb_substr((string)Db::get('access_mode', 'open'), 0, 20)) . ')') . "\n"
             . "▫️ پرداخت‌های در انتظار: " . faNum($o['payments_pending']) . " • کدهای بدون مصرف: " . faNum($o['codes_unused']) . "\n\n"
             . "<b>👥 گروه‌ها و کانال‌ها</b>\n"
             . "▫️ گروه: " . faNum((int)Db::val("SELECT COUNT(*) FROM `chat_hub` WHERE `chat_type` <> 'channel'"))

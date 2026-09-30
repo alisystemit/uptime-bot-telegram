@@ -339,13 +339,15 @@ class Ranking
      * متنِ «کارت رتبهٔ من» — نمای شخصی کاربر.
      * @param array $user ردیف کاربر (باید user_points/user_rank داشته باشد)
      */
-    public static function meText(array $user, int $uid): string
+    public static function meText(?array $user, int $uid): string
     {
+        if (!$user || !is_array($user) || $uid <= 0) return "📊 <b>رتبهٔ من</b>\n\nحسابی پیدا نشد.";
         $points = (int)($user['user_points'] ?? 0);
         $level = (int)($user['user_rank'] ?? 1);
         $level = min($level, self::MAX_LEVEL);
 
-        $sites = Db::all('SELECT `id`,`status` FROM `site` WHERE `user_id` = ? AND `paused` = 0', [$uid]);
+        $sites = [];
+        try { $sites = Db::all('SELECT `id`,`status` FROM `site` WHERE `user_id` = ? AND `paused` = 0', [$uid]); } catch (Throwable $e) { $sites = []; }
         $total = count($sites);
         $up = count(array_filter($sites, fn($s) => ($s['status'] ?? '') === 'up'));
         $down = $total - $up;

@@ -511,6 +511,21 @@ else
   elif [ ! -f "$APP_DIR/cron/checker.php" ]; then warn "cron/checker.php missing — cron skipped";
   else
     LINE="* * * * * $PHP_BIN $APP_DIR/cron/checker.php >> $APP_DIR/logs/cron.log 2>&1"
+    # /etc/cron.d entries REQUIRE a user field (unlike per-user crontabs)
+    CRON_D_LINE="* * * * * root $PHP_BIN $APP_DIR/cron/checker.php >> $APP_DIR/logs/cron.log 2>&1"
+    if case "$APP_DIR" in *" "*) true;; *) false;; esac; then
+      warn "APP_DIR contains spaces ($APP_DIR) — cron line may not work; prefer a path without spaces"
+    fi
+    if ! have crontab && is_root && [ "$SKIP_OS" != "1" ]; then
+      log "crontab tool missing — trying to install cron package..."
+      if [ "$(pkg_mgr)" = "apt" ]; then
+        DEBIAN_FRONTEND=noninteractive apt-get install -y cron >>"$LOG_FILE" 2>&1 || warn "cron package install failed"
+      elif [ "$(pkg_mgr)" = "dnf" ] || [ "$(pkg_mgr)" = "yum" ]; then
+        "$(pkg_mgr)" install -y cronie >>"$LOG_FILE" 2>&1 || warn "cronie install failed"
+      elif [ "$(pkg_mgr)" = "apk" ]; then
+        apk add --no-cache cronie >>"$LOG_FILE" 2>&1 || warn "cronie install failed"
+      fi
+    fi
     if have crontab; then
       OLD="$(crontab -l 2>/dev/null || true)"
       if echo "$OLD" | grep -qF "$APP_DIR/cron/checker.php"; then ok "cron already installed";
@@ -521,8 +536,8 @@ else
         else
           warn "crontab write failed — trying /etc/cron.d"
           if is_root; then
-            # Write to /etc/cron.d as fallback
-            echo "$LINE" > /etc/cron.d/uptimebot 2>>"$LOG_FILE" && ok "cron file: /etc/cron.d/uptimebot" || note_err "cron install failed (write to /etc/cron.d failed)"
+            # Write to /etc/cron.d as fallback (needs user field!)
+            echo "$CRON_D_LINE" > /etc/cron.d/uptimebot 2>>"$LOG_FILE" && ok "cron file: /etc/cron.d/uptimebot" || note_err "cron install failed (write to /etc/cron.d failed)"
           else
             note_err "cron install failed (not root, no crontab write)"
           fi

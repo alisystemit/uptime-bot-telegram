@@ -95,12 +95,15 @@ done
 
 ask() { # ask VAR PROMPT DEFAULT — no-op in non-interactive
   _var="$1"; _prompt="$2"; _def="$3"
-  eval "_cur=\${$_var:-}"
-  if [ -n "$_cur" ]; then return 0; fi
+  if printf -v _cur '%s' "${!_var:-}" 2>/dev/null; then :;
+  else eval "_cur=\${$_var:-}"; fi
+  if [ -n "$_cur" ]; then unset _cur; return 0; fi
+  unset _cur
   if [ "$NONINTERACTIVE" = "1" ]; then
     if [ -n "$_def" ]; then
-      if have printf && printf -v "$_var" '%s' "$_def" 2>/dev/null; then return 0; fi
-      eval "$_var=\$_def"
+      if printf -v "$_var" '%s' "$_def" 2>/dev/null; then return 0; fi
+      _q="$(printf "%s" "$_def" | sed "s/'/'\\\\''/g" 2>/dev/null || printf "%s" "$_def")"
+      eval "$_var='$_q'"; unset _q
       return 0
     fi
     return 1
@@ -108,8 +111,9 @@ ask() { # ask VAR PROMPT DEFAULT — no-op in non-interactive
   printf "%s [%s]: " "$_prompt" "$_def" 2>/dev/null || true
   if ! read -r _ans 2>/dev/null; then _ans=""; fi
   if [ -z "$_ans" ]; then _ans="$_def"; fi
-  if have printf && printf -v "$_var" '%s' "$_ans" 2>/dev/null; then return 0; fi
-  eval "$_var=\$_ans"
+  if printf -v "$_var" '%s' "$_ans" 2>/dev/null; then unset _ans; return 0; fi
+  _q="$(printf "%s" "$_ans" | sed "s/'/'\\\\''/g" 2>/dev/null || printf "%s" "$_ans")"
+  eval "$_var='$_q'"; unset _ans _q
   return 0
 }
 
@@ -193,10 +197,6 @@ pick_php() {
   done
   return 1
 }
-need_ext() { # need_ext NAME PHPCODE-TO-TEST
-  if [ -z "$PHP_BIN" ]; then return 0; fi
-  if "$PHP_BIN" -r "$2" >/dev/null 2>&1; then return 1; else return 0; fi
-}
 
 if [ "$SKIP_OS" = "1" ]; then log "--skip-os: package install skipped";
 else
@@ -257,14 +257,18 @@ else
         warn "curl binary missing"
         if is_root; then
           if [ "$MGR" = "apt" ]; then DEBIAN_FRONTEND=noninteractive apt-get install -y curl >>"$LOG_FILE" 2>&1 || warn "curl install failed";
-          elif [ "$MGR" = "dnf" ] || [ "$MGR" = "yum" ]; then "$MGR" install -y curl >>"$LOG_FILE" 2>&1 || warn "curl install failed"; fi
+          elif [ "$MGR" = "dnf" ] || [ "$MGR" = "yum" ]; then "$MGR" install -y curl >>"$LOG_FILE" 2>&1 || warn "curl install failed";
+          elif [ "$MGR" = "apk" ]; then apk add --no-cache curl >>"$LOG_FILE" 2>&1 || warn "curl install failed";
+          elif [ "$MGR" = "pacman" ]; then pacman -Sy --noconfirm curl >>"$LOG_FILE" 2>&1 || warn "curl install failed"; fi
         fi
       fi
       if ! have mysql && ! have mariadb; then
         warn "mysql client missing (only needed for auto DB create)"
         if is_root; then
           if [ "$MGR" = "apt" ]; then DEBIAN_FRONTEND=noninteractive apt-get install -y default-mysql-client >>"$LOG_FILE" 2>&1 || warn "mysql-client install failed";
-          elif [ "$MGR" = "dnf" ] || [ "$MGR" = "yum" ]; then "$MGR" install -y mysql >>"$LOG_FILE" 2>&1 || warn "mysql install failed"; fi
+          elif [ "$MGR" = "dnf" ] || [ "$MGR" = "yum" ]; then "$MGR" install -y mysql >>"$LOG_FILE" 2>&1 || warn "mysql install failed";
+          elif [ "$MGR" = "apk" ]; then apk add --no-cache mariadb-client >>"$LOG_FILE" 2>&1 || warn "mariadb-client install failed";
+          elif [ "$MGR" = "pacman" ]; then pacman -Sy --noconfirm mariadb-clients >>"$LOG_FILE" 2>&1 || warn "mariadb-clients install failed"; fi
         fi
       fi
     fi
@@ -275,7 +279,18 @@ if [ -z "$PHP_BIN" ]; then
   if have php; then PHP_BIN="$(command -v php)"; fi
 fi
 if [ -z "$PHP_BIN" ]; then note_err "php binary not found — cannot continue with migrate/selftest"; fi
-if [ -n "$PHP_BIN" ]; then log "using php: $PHP_BIN"; fi
+if [ -n "$PHP_BIN" ]; then
+  log "using php: $PHP_BIN"
+  PHP_VER="$("$PHP_BIN" -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;' 2>/dev/null || echo "")"
+  if [ -z "$PHP_VER" ]; then warn "cannot detect php version";
+  elif [ "$PHP_VER" = "8.1" ] || [ "$PHP_VER" = "8.2" ] || [ "$PHP_VER" = "8.3" ] || [ "$PHP_VER" = "8.4" ]; then ok "php version $PHP_VER OK";
+  else
+    case "$PHP_VER" in 7.*|5.*|8.0)
+      warn "php $PHP_VER is too old — project needs PHP 8.1+. Migrate will likely fail; upgrade PHP." ;;
+    *) warn "untested php version $PHP_VER — 8.1+ is supported; continuing" ;;
+    esac
+  fi
+fi
 
 # ============================================================ 2) permissions
 if [ "$SKIP_PERMS" = "1" ]; then log "--skip-perms";
@@ -374,6 +389,29 @@ if [ -n "$PHP_BIN" ]; then
   done
 fi
 
+# config.php was (re)written above — possibly as root. Make sure the web
+# user can still read it, and pre-create cron.log so the first cron run
+# (as another user) does not hit a root-owned file.
+if [ -f "$APP_DIR/config.php" ]; then
+  if ! chmod 644 "$APP_DIR/config.php" 2>/dev/null; then warn "chmod config.php failed"; fi
+  _www=""
+  if id www-data >/dev/null 2>&1; then _www="www-data";
+  elif id apache >/dev/null 2>&1; then _www="apache";
+  elif id nginx >/dev/null 2>&1; then _www="nginx"; fi
+  if [ -n "$_www" ] && is_root; then
+    if ! chown "root:$_www" "$APP_DIR/config.php" 2>/dev/null; then
+      if ! chown "$_www:$_www" "$APP_DIR/config.php" 2>/dev/null; then warn "chown config.php failed"; fi
+    fi
+  fi
+  unset _www 2>/dev/null || true
+fi
+if [ -d "$APP_DIR/logs" ]; then
+  if ! touch "$APP_DIR/logs/cron.log" 2>/dev/null; then warn "cannot pre-create logs/cron.log";
+  else
+    if ! chmod 664 "$APP_DIR/logs/cron.log" 2>/dev/null; then warn "chmod cron.log failed"; fi
+  fi
+fi
+
 # ============================================================ 4) database
 db_ok() { # test via php PDO (uses real config)
   [ -n "$PHP_BIN" ] || return 1
@@ -442,13 +480,14 @@ else
   if [ "$SAFE_DB" != "$DB_NAME" ]; then warn "db name has odd chars — using as-is, may fail"; SAFE_DB="$DB_NAME"; fi
   if [ -n "$DB_PASS" ]; then
     ESC_PASS="$(printf "%s" "$DB_PASS" | sed "s/'/''/g" 2>/dev/null || printf "%s" "$DB_PASS")"
-    if ! mysql_exec "CREATE DATABASE IF NOT EXISTS \`$SAFE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '$DB_USER'@'%' IDENTIFIED BY '$ESC_PASS'; CREATE USER IF NOT EXISTS '$DB_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$DB_USER'@'%'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$DB_USER'@'localhost'; FLUSH PRIVILEGES;"; then
+    ESC_USER="$(printf "%s" "$DB_USER" | sed "s/'/''/g" 2>/dev/null || printf "%s" "$DB_USER")"
+    if ! mysql_exec "CREATE DATABASE IF NOT EXISTS \`$SAFE_DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE USER IF NOT EXISTS '$ESC_USER'@'%' IDENTIFIED BY '$ESC_PASS'; CREATE USER IF NOT EXISTS '$ESC_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$ESC_USER'@'%'; GRANT ALL PRIVILEGES ON \`$SAFE_DB\`.* TO '$ESC_USER'@'localhost'; FLUSH PRIVILEGES;"; then
       warn "auto-create DB failed (no root? remote host?) — assuming DB/user already exist"
     else
       ok "database/user ensured"
       # user may pre-exist with a different password (CREATE ... IF NOT EXISTS
       # does not rotate it) — sync password so app credentials work. Warn-only.
-      if ! mysql_exec "ALTER USER '$DB_USER'@'%' IDENTIFIED BY '$ESC_PASS'; ALTER USER '$DB_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; FLUSH PRIVILEGES;"; then
+      if ! mysql_exec "ALTER USER '$ESC_USER'@'%' IDENTIFIED BY '$ESC_PASS'; ALTER USER '$ESC_USER'@'localhost' IDENTIFIED BY '$ESC_PASS'; FLUSH PRIVILEGES;"; then
         warn "password sync skipped (old MySQL/MariaDB without ALTER USER?) — continuing"
       fi
     fi
@@ -585,7 +624,18 @@ else
       fi
       INFO="$(curl -s -m 20 "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" 2>>"$LOG_FILE" || echo "")"
       if [ -n "$INFO" ]; then echo "$INFO" >>"$LOG_FILE" 2>&1 || true; fi
-      if echo "$INFO" | grep -q '"ok":true'; then ok "webhook info OK"; else warn "getWebhookInfo failed"; fi
+      if echo "$INFO" | grep -q '"ok":true'; then
+        ok "webhook info OK"
+        # setWebhook returns ok even when Telegram cannot reach the URL —
+        # surface the delivery error so the user does not think it works.
+        if echo "$INFO" | grep -q '"last_error_message"'; then
+          warn "telegram reports webhook delivery errors: $(echo "$INFO" | grep -o '"last_error_message":"[^"]*"' 2>/dev/null | head -c 200 || echo see-install.log)"
+          warn "check HTTPS reachability of $HOOK from outside, then re-run"
+        fi
+        if echo "$INFO" | grep -q '"pending_update_count":[1-9]'; then
+          warn "telegram holds pending updates — webhook was down for a while; they will flush now"
+        fi
+      else warn "getWebhookInfo failed"; fi
     fi
   fi
 fi

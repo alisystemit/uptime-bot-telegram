@@ -42,7 +42,7 @@ trait PayUi
         if (!$gws) {
             return BotApi::ikb([
                 [['text' => '🎟 ورود کد فعال‌سازی', 'callback_data' => 'codein']],
-                [['text' => '🔙 منو', 'callback_data' => 'menu']],
+                [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
             ]);
         }
         $rows = [];
@@ -54,7 +54,7 @@ trait PayUi
         }
         $rows[] = [['text' => '📄 فاکتورهای من', 'callback_data' => 'porder']];
         $rows[] = [['text' => '🎟 ورود کد فعال‌سازی', 'callback_data' => 'codein']];
-        $rows[] = [['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
         return BotApi::ikb($rows);
     }
 
@@ -116,7 +116,7 @@ trait PayUi
         $kb = [];
         if ($url !== '') $kb[] = [['text' => '🔗 رفتن به صفحهٔ پرداخت', 'url' => $url]];
         $kb[] = [['text' => '🔄 بررسی پرداخت', 'callback_data' => 'pcheck:' . (int)$r['id']]];
-        $kb[] = [['text' => '💳 درگاه دیگر', 'callback_data' => 'buy'], ['text' => '🔙 منو', 'callback_data' => 'menu']];
+        $kb[] = [['text' => '💳 درگاه دیگر', 'callback_data' => 'buy'], ['text' => '🔙 بازگشت', 'callback_data' => 'menu']];
 
         $this->edit((int)$msgId, $txt, BotApi::ikb($kb));
     }
@@ -147,7 +147,7 @@ trait PayUi
             BotApi::ikb([
                 [['text' => '🔄 بررسی دوباره', 'callback_data' => 'pcheck:' . $paymentId]],
                 [['text' => '💬 ارسال رسید به مدیر', 'callback_data' => 'buy']],
-                [['text' => '🔙 منو', 'callback_data' => 'menu']],
+                [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
             ]));
     }
 
@@ -308,7 +308,7 @@ trait PayUi
             . "برای لغو: ❌ انصراف\n\n"
             . ($field === 'secret' ? "🔐 این مقدار باید دقیقاً همان Webhook Secret باشد که در پنل درگاه می‌بینید.\n" : '')
             . ($field === 'merchant_id' ? "🏷 فقط برای زرین‌پال لازم است (کد ۳۶ کاراکتری).\n" : ''),
-            BotApi::kb([[['text' => '❌ انصراف']]]));
+            Nav::cancelKb());
     }
 
     private function stepPayGateway(string $text): void
@@ -336,7 +336,7 @@ trait PayUi
         $j = json_decode($text, true);
         if (!is_array($j)) {
             $this->send("❌ ورودی JSON معتبر نیست.\n\nنمونهٔ ساختار:\n<code>{\n  \"create_path\": \"/api/pay\",\n  \"verify_path\": \"/api/verify\",\n  \"ref_path\": \"id\",\n  \"url_path\": \"pay_url\",\n  \"status_path\": \"status\",\n  \"ok_values\": [\"paid\",\"ok\"],\n  \"field_map\": {\"amount\":\"amount\",\"order_id\":\"order\",\"callback\":\"callback\"}\n}</code>",
-                BotApi::kb([[['text' => '❌ انصراف']]]));
+                Nav::cancelKb());
             return;
         }
         Db::q('UPDATE `pay_gateway` SET `settings` = ? WHERE `code` = ?',

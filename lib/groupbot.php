@@ -61,17 +61,28 @@ class GroupBot
 
         // ---- ادامهٔ یک مرحلهٔ نیمه‌کاره ----
         $st = Group::step($this->chatId);
+        // ── فرار سراسری: قبل از هر چیز دیگر ────────────────────────
+        // این چک باید قبل از پردازش step باشد، وگرنه کلمهٔ «انصراف» به‌عنوان
+        // نام سایت یا آدرس ثبت می‌شود.
+        if (Nav::isEscape($text) || $text === '/cancel@' . botUsername()) {
+            $wasBusy = $st['step'] !== 'idle';
+            Group::clearStep($this->chatId);
+            if ($text === '/start' || $text === '/start@' . botUsername()) {
+                $this->help();
+                return;
+            }
+            $this->say($wasBusy
+                ? "❌ <b>انصراف داده شد.</b>\nعملیات نیمه‌کاره لغو شد و چیزی تغییر نکرد."
+                : "❌ انصراف داده شد.");
+            return;
+        }
+
         if ($st['step'] !== 'idle' && $text !== '' && $text[0] !== '/') {
             if ((int)$st['step_user'] === $this->uid) {
                 $this->handleStep($text, $st);
                 return;
             }
             $this->say('⏳ فرد دیگری در حال ثبت مانیتور است؛ کمی صبر کنید یا دستور <code>/cancel</code> را بفرستید.');
-            return;
-        }
-        if ($text === '/cancel' || $text === '/cancel@' . botUsername() || $text === '❌ انصراف') {
-            Group::clearStep($this->chatId);
-            $this->say('❌ انصراف داده شد.');
             return;
         }
 
@@ -508,6 +519,12 @@ class GroupBot
 
     private function handleStep(string $text, array $st): void
     {
+        // فرار سراسری گروه: هیچ مرحله‌ای نباید اعضا را گیر بیندازد
+        if (Nav::isEscape($text)) {
+            Group::clearStep($this->chatId);
+            $this->say('❌ انصراف داده شد.');
+            return;
+        }
         switch ((string)$st['step']) {
             case 'await_site':
                 $parts = preg_split('/\s+/u', trim($text)) ?: [];
@@ -518,6 +535,12 @@ class GroupBot
                 if ($url === '') { $this->say('❌ آدرس نامعتبر است.'); return; }
                 $this->insertSite($url, $label);
                 return;
+            case 'await_del': {
+                // کاربر به‌جای تأیید، متن دیگری فرستاده — یادآوری مسیر تأیید/انصراف
+                $siteId = (int)($st['temp']['site'] ?? 0);
+                $this->say("⚠️ برای تأیید حذف دوباره <code>/remove #" . faNum($siteId) . "</code> را بفرستید\n(انصراف: /cancel)");
+                return;
+            }
         }
         Group::clearStep($this->chatId);
     }
@@ -595,7 +618,9 @@ class GroupBot
             . "▫️ <code>/list</code> — فهرست مانیتورها با آپتایم\n"
             . "▫️ <code>/status #3</code> — جزئیات کامل یک مانیتور\n"
             . "▫️ <code>/incidents</code> — تاریخچهٔ قطعی‌ها\n"
-            . "▫️ <code>/page</code> — لینک صفحهٔ وضعیت عمومی\n";
+            . "▫️ <code>/page</code> — لینک صفحهٔ وضعیت عمومی\n"
+            . "▫️ <code>/cancel</code> — انصراف از هر عملیات نیمه‌کاره\n"
+            . "▫️ <code>/help</code> — همین راهنما\n";
         if ($admin) {
             $txt .= "\n<b>دستورهای مدیر</b>\n"
                 . "▫️ <code>/add https://example.com نام</code> — افزودن مانیتور\n"

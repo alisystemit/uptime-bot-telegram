@@ -499,8 +499,10 @@ fi
 # ============================================================ 5) selftest
 if [ -n "$PHP_BIN" ] && [ -f "$APP_DIR/cron/checker.php" ]; then
   log "selftest..."
-  if ! "$PHP_BIN" "$APP_DIR/cron/checker.php" --selftest >>"$LOG_FILE" 2>&1; then warn "selftest failed (see install.log) — cron still installed";
-  else ok "selftest passed ($(grep -a -m1 -o 'OK.*' "$LOG_FILE" 2>/dev/null || echo ok))"; fi
+  SELF_OUT="$("$PHP_BIN" "$APP_DIR/cron/checker.php" --selftest 2>&1 || true)"
+  echo "$SELF_OUT" >>"$LOG_FILE" 2>&1 || true
+  if echo "$SELF_OUT" | grep -q '^OK'; then ok "selftest passed ($(echo "$SELF_OUT" | head -n1 2>/dev/null || echo ok))";
+  else warn "selftest failed (see install.log) — cron still installed"; fi
   if ! "$PHP_BIN" "$APP_DIR/cron/checker.php" --once --quiet >>"$LOG_FILE" 2>&1; then warn "--once round failed (empty install = normal if no sites yet)"; else ok "first check round done"; fi
 else warn "checker.php missing — selftest skipped"; fi
 
@@ -544,8 +546,8 @@ else
         fi
       fi
     elif is_root; then
-      # Write directly to /etc/cron.d when no crontab tool available but we're root
-      echo "$LINE" > /etc/cron.d/uptimebot 2>>"$LOG_FILE" && ok "cron file: /etc/cron.d/uptimebot" || note_err "cron install failed (root but write failed)"
+      # Write directly to /etc/cron.d when no crontab tool available but we're root (needs user field!)
+      echo "$CRON_D_LINE" > /etc/cron.d/uptimebot 2>>"$LOG_FILE" && ok "cron file: /etc/cron.d/uptimebot" || note_err "cron install failed (root but write failed)"
     else
       note_err "no crontab tool and not root — add manually: $LINE"
     fi

@@ -102,9 +102,17 @@ class Group
 
     public static function setStep(int $chatId, string $step, int $userId = 0, array $temp = []): void
     {
+        // upsert لازم است: قبلاً فقط UPDATE بود و اگر ردیف گروه هنوز ساخته
+        // نشده بود (مثلاً اولین پیام بعد از /add)، مرحله بی‌صدا گم می‌شد و ربات
+        // هرگز ورودی کاربر را نمی‌خواست.
         Db::q(
-            'UPDATE `chat_hub` SET `step` = ?, `step_user` = ?, `temp` = ? WHERE `chat_id` = ?',
-            [$step, $userId, $temp ? json_encode($temp, JSON_UNESCAPED_UNICODE) : null, $chatId]
+            'INSERT INTO `chat_hub` (`chat_id`,`chat_type`,`title`,`step`,`step_user`,`temp`,`created_at`)
+             VALUES (?,?,?,?,?,?,NOW())
+             ON DUPLICATE KEY UPDATE `step` = VALUES(`step`),
+                                     `step_user` = VALUES(`step_user`),
+                                     `temp` = VALUES(`temp`)',
+            [$chatId, $chatId < 0 ? 'supergroup' : 'group', '', $step, $userId,
+             $temp ? json_encode($temp, JSON_UNESCAPED_UNICODE) : null]
         );
     }
 

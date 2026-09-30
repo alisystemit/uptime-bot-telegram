@@ -16,6 +16,7 @@ if (!defined('UPTIME_ROOT')) {
     date_default_timezone_set('UTC');
 
     require_once __DIR__ . '/util.php';
+    require_once __DIR__ . '/nav.php';
     require_once __DIR__ . '/db.php';
     require_once UPTIME_ROOT . '/botapi.php';
     require_once __DIR__ . '/ssl.php';
@@ -74,9 +75,6 @@ function botAdminIds(): array
     $single = $cfg['admin_id'] ?? null;
     if (is_array($single)) { foreach ($single as $v) { if (is_numeric($v) && (int)$v > 0) $ids[] = (int)$v; } }
     elseif (is_numeric($single) && (int)$single > 0) $ids[] = (int)$single;
-    foreach ((array)($cfg['admin_ids'] ?? []) as $v) {
-        if (is_numeric($v) && (int)$v > 0) $ids[] = (int)$v;
-    }
     foreach ((array)($cfg['admin_ids'] ?? []) as $v) {
         if (is_numeric($v) && (int)$v > 0) $ids[] = (int)$v;
     }

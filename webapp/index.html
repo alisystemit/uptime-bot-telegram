@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#070b14">
+<meta name="color-scheme" content="dark light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="format-detection" content="telephone=no">
+<title>آپ‌تایم — مانیتورینگ</title>
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body class="booting">
+<script>
+/* ضد صفحهٔ سیاه: اگر ماژول‌ها اجرا نشدند، صفحه پس از ۲.۵ ثانیه نمایش داده می‌شود */
+window.addEventListener('error', function (e) {
+  var b = document.body;
+  if (b && b.classList.contains('booting')) {
+    var v = document.getElementById('view');
+    if (v) v.innerHTML = '<div class="empty card">⚠️<b>خطا در بارگذاری</b><span>' +
+      String((e && e.message) || 'ماژول‌ها کامل بارگذاری نشدند') + '</span></div>';
+    b.classList.remove('booting');
+    b.classList.add('ready');
+  }
+}, true);
+setTimeout(function () {
+  var b = document.body;
+  if (b && b.classList.contains('booting')) {
+    b.classList.remove('booting');
+    b.classList.add('ready');
+    var v = document.getElementById('view');
+    if (v && !v.innerHTML.trim()) {
+      v.innerHTML = '<div class="empty card">⚠️<b>برنامه بارگذاری نشد</b>' +
+        '<span>ماژول‌های جاوااسکریپت اجرا نشدند. صفحه را تازه کنید.</span></div>';
+    }
+  }
+}, 2500);
+</script>
+
+<!-- نوار پیشرفت بارگذاری -->
+<div id="progress" aria-hidden="true"><i></i><span id="progressText"></span></div>
+
+<div id="app">
+  <!-- ===== هدر ===== -->
+  <header class="topbar">
+    <button class="iconbtn" id="btnBack" aria-label="بازگشت">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m11 18-6-6 6-6"/></svg>
+    </button>
+    <h1 id="title">آپ‌تایم</h1>
+    <button class="iconbtn" id="btnRefresh" aria-label="تازه‌سازی">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
+    </button>
+    <button class="iconbtn" id="btnSettings" aria-label="تنظیمات">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </header>
+
+  <!-- ===== محتوا ===== -->
+  <main id="scroller">
+    <div class="pull" id="pull"><span class="pull-in"><span class="pico"></span><span id="pullTxt">↓ برای تازه‌سازی بکشید</span></span></div>
+    <div id="view" role="main"></div>
+  </main>
+
+  <!-- ===== دکمهٔ افزودن ===== -->
+  <button class="fab hide" id="fabAdd" aria-label="افزودن سایت">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <!-- ===== تب‌ها ===== -->
+  <nav class="tabbar" id="tabbar" aria-label="ناوبری اصلی">
+    <button class="tab on" data-tab="dash" aria-label="خانه">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.8 12 3l9 7.8"/><path d="M5 9.6V21h14V9.6"/><path d="M9 21v-6h6v6"/></svg>
+      <span>خانه</span></button>
+    <button class="tab" data-tab="report" aria-label="گزارش">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5"/><path d="M8 19V9"/><path d="M12 19v-6"/><path d="M16 19V7"/><path d="M20 19V3"/><path d="M2 19h20"/></svg>
+      <span>گزارش</span></button>
+    <button class="tab" data-tab="incidents" aria-label="رخدادها">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2-6.5 4 13L15 12h6"/></svg>
+      <span>رخدادها</span></button>
+    <button class="tab" data-tab="domains" aria-label="دامنه‌ها">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.5 2.6 3.8 5.7 3.8 9S14.5 18.4 12 21c-2.5-2.6-3.8-5.7-3.8-9S9.5 5.6 12 3z"/></svg>
+      <span>دامنه‌ها</span></button>
+    <button class="tab" data-tab="rank" aria-label="رنکینگ">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9H4.5A1.5 1.5 0 0 0 3 10.5v8A1.5 1.5 0 0 0 4.5 20h3A1.5 1.5 0 0 0 9 18.5v-8A1.5 1.5 0 0 0 7.5 9H6z"/><path d="M13 4h-2a1.5 1.5 0 0 0-1.5 1.5v13A1.5 1.5 0 0 0 11 20h4a1.5 1.5 0 0 0 1.5-1.5V9L13 4z"/><path d="M14 4l6 5h-6z"/></svg>
+      <span>رنکینگ</span></button>
+  </nav>
+</div>
+
+<div id="toasts" aria-live="polite" aria-atomic="false"></div>
+
+<!-- ===== شیت افزودن سایت ===== -->
+<div class="sheet-mask" id="sheetAdd" role="dialog" aria-modal="true" aria-label="افزودن سایت">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2>➕ افزودن سایت</h2>
+    <input class="inp" id="addTarget" placeholder="https://example.com" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" inputmode="url">
+    <div class="fmt-chips" role="group" aria-label="نوع مانیتور">
+      <span class="fmt on" data-fmt="http">🌐 HTTP/HTTPS</span>
+      <span class="fmt" data-fmt="tcp">🔌 TCP</span>
+      <span class="fmt" data-fmt="ping">📡 پینگ</span>
+    </div>
+    <div class="hint">
+      <b style="color:#93c5fd">https://example.com</b> برای HTTP • <b style="color:#93c5fd">example.com:8080</b> برای TCP • <b style="color:#93c5fd">example.com</b> برای پینگ
+    </div>
+    <div class="row2">
+      <button class="btn ghost" id="addCancel">انصراف</button>
+      <button class="btn pri" id="addSubmit">ثبت و چک</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== شیت تأیید حذف ===== -->
+<div class="sheet-mask" id="sheetDel" role="dialog" aria-modal="true" aria-label="حذف مانیتور">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2>🗑 حذف مانیتور</h2>
+    <p id="delText" class="del-text"></p>
+    <div class="row2">
+      <button class="btn ghost" id="delCancel">انصراف</button>
+      <button class="btn dng" id="delOk">بله، حذف کن</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== شیت کلی (تنظیمات / مرتب‌سازی) ===== -->
+<div class="sheet-mask" id="sheetGen" role="dialog" aria-modal="true" aria-label="تنظیمات">
+  <div class="sheet">
+    <div class="grab"></div>
+    <h2 id="genTitle">⚙️ تنظیمات</h2>
+    <div id="genBody"></div>
+  </div>
+</div>
+
+<!-- ===== ماژول‌های جاوااسکریپت (بدون هیچ وابستگی خارجی) ===== -->
+<script src="js/format.js"></script>
+<script src="js/telegram.js"></script>
+<script src="js/api.js"></script>
+<script src="js/charts.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/views.js"></script>
+<script src="js/actions.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

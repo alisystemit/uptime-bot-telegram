@@ -27,6 +27,7 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/pay.php';
     require_once __DIR__ . '/ranking.php';
     require_once __DIR__ . '/page.php';
+    require_once __DIR__ . '/miniapp.php';
     require_once __DIR__ . '/groupbot.php';
     require_once __DIR__ . '/paybot.php';
     require_once __DIR__ . '/bot.php';
@@ -64,6 +65,16 @@ function botToken(): string
 function botUsername(): string
 {
     return trim((string)(appConfig()['bot_username'] ?? ''), '@');
+}
+
+/** URL اپلیکیشن تلگرام (Mini App) — بر پایهٔ base_url / domain کانفیگ */
+function miniAppUrl(): string
+{
+    $cfg = appConfig();
+    $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
+    if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+    if ($base === 'https://' || $base === '') return '';
+    return $base . '/webapp/index.html';
 }
 
 /** آیدی ادمین(ها) — آیدی اصلی از کانفیگ + لیست جداگانهٔ ادمین‌ها اگر ست شده باشد */

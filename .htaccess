@@ -58,6 +58,9 @@ DirectoryIndex index.php
 #   index.php   → وبهوک تلگرام
 #   status.php  → صفحهٔ وضعیت عمومی
 #   api.php     → JSON صفحهٔ وضعیت
+#   app.php     → مسیریاب اپلیکیشن (لینک‌های قدیمی → webapp/)
+#   webapp/     → اپلیکیشن تلگرام (Mini App — UI جاوااسکریپتی: index.html + css + js)
+#   appapi.php  → JSON اپلیکیشن (احراز با initData تلگرام)
 #   pay.php     → بازگشت خریدار و وب‌هوک درگاه‌های پرداخت
 #   table.php   → نصب/به‌روزرسانی جدول‌ها (با secret)
 #   cron/*.php  → کرون چک (با secret)

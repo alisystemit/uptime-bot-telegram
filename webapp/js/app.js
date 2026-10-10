@@ -862,11 +862,27 @@
       return;
     }
 
-    // بررسی سه‌حالته با خوانش زنده (نه فقط کش لحظهٔ لود اسکریپت):
-    // ۱) بدون SDK یعنی مرورگر خارجی  ۲) با SDK ولی initData خالی یعنی مسیر بازشدن اشتباه
+    // بررسی سه‌حالته با خوانش زنده + چندباکس (retry) برای زمانی که SDK
+    // تلگرام هنوز کامل initialize نشده باشد.
+    function checkTelegramSdk() {
+      // ۱) بدون SDK یعنی مرورگر خارجی  ۲) با SDK ولی initData خالی یعنی مسیر بازشدن اشتباه
+      var sdkNow = false, initNow = '';
+      try { sdkNow = TG.hasSdk ? TG.hasSdk() : !!TG.hasTelegram; } catch (e) { sdkNow = !!TG.hasTelegram; }
+      try { initNow = TG.liveInitData ? TG.liveInitData() : (TG.initData || ''); } catch (e) { initNow = TG.initData || ''; }
+      return { sdkNow: sdkNow, initNow: initNow };
+    }
+
+    // چندبار امتحان می‌کنیم تا SDK تلگرام و initData آماده شود
     var sdkNow = false, initNow = '';
-    try { sdkNow = TG.hasSdk ? TG.hasSdk() : !!TG.hasTelegram; } catch (e) { sdkNow = !!TG.hasTelegram; }
-    try { initNow = TG.liveInitData ? TG.liveInitData() : (TG.initData || ''); } catch (e) { initNow = TG.initData || ''; }
+    for (var _i = 0; _i < 10; _i++) {
+      var _r = checkTelegramSdk();
+      sdkNow = _r.sdkNow;
+      initNow = _r.initNow;
+      if (sdkNow && initNow) break;
+      // کوتاه موند
+      var _s = Date.now();
+      while (Date.now() - _s < 150) { /* busy wait */ }
+    }
 
     if (!sdkNow) {
       locked('این برنامه فقط داخل تلگرام کار می‌کند',

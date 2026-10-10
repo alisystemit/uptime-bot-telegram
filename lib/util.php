@@ -185,9 +185,9 @@ function normalizeTarget(string $input): array
 
     if (preg_match('#^https?://#i', $raw)) {
         $p = parse_url($raw);
-        if ($p === false || empty($p['host'])) return ['ok' => false, 'error' => 'لینک معتبر نیست.'];
+        if ($p === false || empty($p['host'])) return ['ok' => false, 'error' => '🔗 لینکِ وارد‌شده معتبر نیست. مثال: https://example.com'];
         $host = strtolower($p['host']);
-        if (!validHost($host)) return ['ok' => false, 'error' => 'هاست/دامنهٔ لینک معتبر نیست: ' . $host];
+        if (!validHost($host)) return ['ok' => false, 'error' => '🔗 دامنهٔ «' . mb_substr($host, 0, 40) . '» معتبر نیست یا ممکن است غلط‌نویس باشد.'];
         $port = (int)($p['port'] ?? 0);
         $scheme = strtolower($p['scheme']);
         $url = $scheme . '://' . $host . ($port ? ':' . $port : '') . ($p['path'] ?? '');
@@ -215,7 +215,7 @@ function normalizeTarget(string $input): array
     }
 
     $host = strtolower(trim($host));
-    if (!validHost($host)) return ['ok' => false, 'error' => 'آدرس واردشده معتبر نیست. نمونه: example.com یا 1.2.3.4 یا https://example.com'];
+    if (!validHost($host)) return ['ok' => false, 'error' => '📍 دامنه یا IP معتبر بفرستید. مثال:\n🔹 example.com\n🔹 1.2.3.4\n🔹 [2001:db8::1]'];
 
     if ($port < 0 || $port > 65535) return ['ok' => false, 'error' => 'پورت نامعتبر است.'];
 

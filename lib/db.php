@@ -240,6 +240,26 @@ class Db
             'raw'         => 'TEXT NULL DEFAULT NULL',
         ];
         foreach ($payCols as $c => $ddl) self::ensureColumn('payments', $c, $ddl);
+        
+        // pay_url را به 1000 کاراکتر بسط بده (برای URL‌های پرداخت طولانی)
+        try {
+            $cols = self::pdo()->query("SHOW COLUMNS FROM `payments` WHERE `Field` = 'pay_url'")->fetchAll(PDO::FETCH_ASSOC);
+            if ($cols && isset($cols[0]['Type'])) {
+                $type = $cols[0]['Type'];
+                if (!str_contains($type, '1000')) {
+                    self::pdo()->exec("ALTER TABLE `payments` MODIFY COLUMN `pay_url` VARCHAR(1000) NOT NULL DEFAULT ''");
+                }
+            }
+        } catch (Throwable $e) {
+            @error_log('[uptime] payments pay_url upgrade failed: ' . $e->getMessage());
+        }
+        
+        // ---------- pay_gateway: ستون‌های کلید API ----------
+        $gwCols = [
+            'api_key' => 'VARCHAR(500) NOT NULL DEFAULT \'\'',
+            'secret'  => 'VARCHAR(500) NOT NULL DEFAULT \'\'',
+        ];
+        foreach ($gwCols as $c => $ddl) self::ensureColumn('pay_gateway', $c, $ddl);
         self::ensureColumn('pay_gateway', 'created_at', 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP');
         try {
             $pidx = self::indexes('payments');
@@ -423,8 +443,8 @@ class Db
                 `title` VARCHAR(60) NOT NULL DEFAULT '',
                 `enabled` TINYINT(1) NOT NULL DEFAULT 0,
                 `kind` VARCHAR(10) NOT NULL DEFAULT 'card',
-                `api_key` VARCHAR(190) NOT NULL DEFAULT '',
-                `secret` VARCHAR(190) NOT NULL DEFAULT '',
+                `api_key` VARCHAR(500) NOT NULL DEFAULT '',
+                `secret` VARCHAR(500) NOT NULL DEFAULT '',
                 `merchant_id` VARCHAR(120) NOT NULL DEFAULT '',
                 `base_url` VARCHAR(190) NOT NULL DEFAULT '',
                 `settings` TEXT NULL DEFAULT NULL,

@@ -541,6 +541,117 @@ class Db
                 UNIQUE KEY `uniq_scope` (`user_id`, `chat_id`, `domain`(120)),
                 KEY `idx_domain` (`domain`)
             )" . $engine,
+
+            // ===== Webhook‌های شخصی‌سازی =====
+            "CREATE TABLE IF NOT EXISTS `webhooks` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `site_id` INT UNSIGNED NOT NULL,
+                `type` VARCHAR(24) NOT NULL,
+                `url` VARCHAR(1000) NOT NULL,
+                `events` VARCHAR(255) NOT NULL DEFAULT 'down,up,slow',
+                `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+                `test_at` DATETIME NULL,
+                `last_used` DATETIME NULL,
+                `fail_count` INT NOT NULL DEFAULT 0,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `idx_user` (`user_id`),
+                KEY `idx_site` (`site_id`)
+            )" . $engine,
+
+            // ===== گزارش‌های SLA =====
+            "CREATE TABLE IF NOT EXISTS `sla_reports` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `period_start` DATE NOT NULL,
+                `period_end` DATE NOT NULL,
+                `type` VARCHAR(10) NOT NULL,
+                `data_json` LONGTEXT NOT NULL,
+                `sent_at` DATETIME NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `idx_user` (`user_id`, `created_at`)
+            )" . $engine,
+
+            // ===== صف کارها (Queue) =====
+            "CREATE TABLE IF NOT EXISTS `queue` (
+                `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `type` VARCHAR(40) NOT NULL,
+                `data` LONGTEXT NOT NULL,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+                `result` LONGTEXT NULL,
+                `error` VARCHAR(500) NULL,
+                `attempts` INT NOT NULL DEFAULT 0,
+                `last_error` VARCHAR(500) NULL,
+                `priority` INT NOT NULL DEFAULT 5,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `started_at` DATETIME NULL,
+                `completed_at` DATETIME NULL,
+                PRIMARY KEY (`id`),
+                KEY `idx_status` (`status`, `priority`, `created_at`)
+            )" . $engine,
+
+            // ===== Integration‌های خارجی (Slack, Discord) =====
+            "CREATE TABLE IF NOT EXISTS `integrations` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `type` VARCHAR(20) NOT NULL,
+                `webhook_url` VARCHAR(1000) NOT NULL,
+                `enabled` TINYINT(1) NOT NULL DEFAULT 1,
+                `settings` JSON NULL,
+                `test_at` DATETIME NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uniq_user_type` (`user_id`, `type`)
+            )" . $engine,
+
+            // ===== برنامهٔ همکاری =====
+            "CREATE TABLE IF NOT EXISTS `affiliates` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `user_id` BIGINT UNSIGNED NOT NULL,
+                `code` VARCHAR(10) UNIQUE NOT NULL,
+                `commission_rate` INT NOT NULL DEFAULT 20,
+                `signup_count` INT NOT NULL DEFAULT 0,
+                `total_commission` BIGINT NOT NULL DEFAULT 0,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'active',
+                `last_signup` DATETIME NULL,
+                `payout_method` VARCHAR(20) NULL,
+                `payout_info` VARCHAR(255) NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                UNIQUE KEY `uniq_user` (`user_id`),
+                KEY `idx_code` (`code`)
+            )" . $engine,
+
+            // ===== درآمدهای affiliate =====
+            "CREATE TABLE IF NOT EXISTS `affiliate_earnings` (
+                `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `affiliate_id` INT UNSIGNED NOT NULL,
+                `amount` BIGINT NOT NULL,
+                `commission` BIGINT NOT NULL,
+                `type` VARCHAR(20) NOT NULL DEFAULT 'referral_payment',
+                `payment_id` INT UNSIGNED NOT NULL,
+                `payout_id` INT UNSIGNED NULL,
+                `paid_at` DATETIME NULL,
+                `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (`id`),
+                KEY `idx_affiliate` (`affiliate_id`, `paid_at`)
+            )" . $engine,
+
+            // ===== درخواست‌های پرداخت affiliate =====
+            "CREATE TABLE IF NOT EXISTS `affiliate_payouts` (
+                `id` INT UNSIGNED NOT NULL AUTO_INCREMENT,
+                `affiliate_id` INT UNSIGNED NOT NULL,
+                `amount` BIGINT NOT NULL,
+                `method` VARCHAR(20) NOT NULL,
+                `status` VARCHAR(20) NOT NULL DEFAULT 'pending',
+                `reference` VARCHAR(255) NULL,
+                `requested_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                `completed_at` DATETIME NULL,
+                PRIMARY KEY (`id`),
+                KEY `idx_affiliate` (`affiliate_id`, `status`)
+            )" . $engine,
         ];
     }
 

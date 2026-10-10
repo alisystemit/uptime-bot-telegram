@@ -67,14 +67,70 @@ function botUsername(): string
     return trim((string)(appConfig()['bot_username'] ?? ''), '@');
 }
 
-/** URL اپلیکیشن تلگرام (Mini App) — بر پایهٔ base_url / domain کانفیگ */
+/** URL اپلیکیشن تلگرام (Mini App) — 自動	rotection از سرور */
 function miniAppUrl(): string
 {
     $cfg = appConfig();
+    
+    // ==========================================
+    // قدم اول: تلاش از reconfigure config.php
+    // ==========================================
     $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
-    if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
-    if ($base === 'https://' || $base === '') return '';
-    return $base . '/webapp/index.html';
+    if ($base && $base !== '{BASE_URL}' && $base !== 'https://') {
+        // config.php مقدار واقعی دارد → مستقیماً استفاده
+        if ($base !== '') return $base . '/webapp/index.html';
+    }
+    
+    // ==========================================
+    // قدم دوم: خودکارDetection از $_SERVER
+    // اینکار بدون هیچ تنظیمات Admin انجام می‌شود
+    // ==========================================
+    $serverName = $_SERVER['SERVER_NAME'] ?? '';
+    $serverPort = $_SERVER['SERVER_PORT'] ?? '';
+    $requestScheme = $_SERVER['REQUEST_SCHEME'] ?? 'http';
+    
+    if ($serverName) {
+        $host = $serverName;
+        // پورت پیش‌فرض اضافه کن (اگر غیراز ۸۰/۴۴۳ باشد)
+        if ($serverPort && $serverPort != '80' && $serverPort != '443') {
+            $host .= ':'.$serverPort;
+        }
+        // اطمینان از استفاده از https (Telegram WebApp نیاز دارد)
+        $scheme = ($requestScheme === 'https' || $serverPort === '443') ? 'https' : 'https';
+        $base = $scheme . '://' . $host;
+        if ($base !== '') return $base . '/webapp/index.html';
+    }
+    
+    // ==========================================
+    // قدم سوم: از دیتابیس (اگر admin قبلاً تنظیم کرده باشد)
+    // ==========================================
+    $base = rtrim((string)(Db::get('base_url') ?? ''), '/');
+    if ($base && $base !== 'https://') {
+        if ($base !== '') return $base . '/webapp/index.html';
+    }
+    
+    // ==========================================
+    // قدم چهارم: از domain در config.php
+    // ==========================================
+    $domain = trim((string)($cfg['domain'] ?? ''));
+    if ($domain && $domain !== '{DOMAIN.COM/PATH/BOT}') {
+        $base = 'https://' . $domain;
+        if ($base !== 'https://' && $base !== '') return $base . '/webapp/index.html';
+    }
+    
+    // ==========================================
+    // قدم پنجم: از domain در دیتابیس
+    // ==========================================
+    $domain = trim((string)(Db::get('domain') ?? ''));
+    if ($domain) {
+        $base = 'https://' . $domain;
+        if ($base !== 'https://' && $base !== '') return $base . '/webapp/index.html';
+    }
+    
+    // ==========================================
+    // Fuß: هیچfind نشد → دکمه مخفی می‌ماند (امن)
+    // ==========================================
+    return '';
 }
 
 /** آیدی ادمین(ها) — آیدی اصلی از کانفیگ + لیست جداگانهٔ ادمین‌ها اگر ست شده باشد */

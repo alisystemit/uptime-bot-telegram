@@ -1069,6 +1069,18 @@ class Bot
             $this->send("✅ شماره کارت ذخیره شد:\n<code>" . tgH(Db::get('card', '')) . "</code>", $this->adminPanelMenu());
             return;
         }
+        if ($key === 'base_url') {
+            Db::set('base_url', trim($text));
+            $this->clearStep();
+            $this->send("✅ آدرس پایه اپلیکیشن ذخیره شد:\n<code>" . tgH(Db::get('base_url', '')) . "</code>", $this->adminPanelMenu());
+            return;
+        }
+        if ($key === 'domain') {
+            Db::set('domain', trim($text));
+            $this->clearStep();
+            $this->send("✅ دامنه ربات ذخیره شد:\n<code>" . tgH(Db::get('domain', '')) . "</code>", $this->adminPanelMenu());
+            return;
+        }
         $rules = [
             'max_users' => [0, 100000, 'سقف کاربران (۰ = نامحدود)'],
             'max_sites' => [1, 100, 'سقف سایت هر کاربر عادی'],
@@ -2361,6 +2373,7 @@ class Bot
             [['text' => '📆 مدت اشتراک (روز)', 'callback_data' => 'set:vip_days'], ['text' => '👥 سقف مانیتور گروه', 'callback_data' => 'set:group_max_sites']],
             [['text' => '🔐 هشدار گواهی (روز)', 'callback_data' => 'set:ssl_warn_days'], ['text' => '🌐 هشدار دامنه (روز)', 'callback_data' => 'set:domain_warn_days']],
             [['text' => '📇 سقف دامنه', 'callback_data' => 'set:max_domains'], ['text' => '🔕 اعلان کندی', 'callback_data' => 'set:notify_slow']],
+            [['text' => '🌐 آدرس اپلیکیشن (base_url)', 'callback_data' => 'set:base_url'], ['text' => '🌐 دامنه ربات', 'callback_data' => 'set:domain']],
             [['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها', 'callback_data' => 'set:notify'],
              ['text' => '🗣 منشن در گروه', 'callback_data' => 'set:group_mention']],
             [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک', 'callback_data' => Db::getBool('pause_all', false) ? 'resume' : 'pause']],

@@ -760,6 +760,23 @@ body.ready #view{animation:fadeUp .35s var(--ease)}
 .lock-em{font-size:46px;display:block;margin-bottom:14px}
 .locked b{font-size:16px;display:block;margin-bottom:8px}
 .locked p{font-size:12.5px;color:var(--muted);line-height:2;margin:0}
+.lock-btns{display:flex;gap:8px;margin-top:16px}
+.lock-btn{
+  flex:1;border:none;border-radius:13px;padding:12px 8px;cursor:pointer;
+  font-family:inherit;font-size:13px;font-weight:800;color:#fff;
+  background:linear-gradient(135deg,#1d4ed8,#0ea5e9);
+  box-shadow:0 10px 24px -12px #0ea5e9;transition:transform .15s,filter .15s;
+}
+.lock-btn:active{transform:scale(.95);filter:brightness(1.2)}
+.lock-btn.ghost{
+  background:transparent;color:var(--accent);
+  border:1px dashed var(--line2);box-shadow:none;
+}
+.lock-diag{
+  margin-top:12px;font-size:9.5px;color:var(--dim);
+  background:#0a1120;border:1px dashed #2a3c63;border-radius:9px;
+  padding:6px 9px;text-align:center;direction:ltr;word-break:break-all;
+}
 .lock-foot{margin-top:16px;font-size:10px;color:var(--dim)}
 
 /* ===================== آفلاین ===================== */

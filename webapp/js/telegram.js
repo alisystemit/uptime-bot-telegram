@@ -27,6 +27,38 @@
   function has(name) { return !!(tg && tg[name] != null); }
 
   /* ============================================================
+     خوانش زنده — initData فقط یک‌بار هنگام لود اسکریپت کش می‌شود؛
+     اگر به هر دلیلی دیرتر آماده شود، این توابع مقدار لحظه‌ای را
+     مستقیم از SDK می‌خوانند تا قفل اشتباه رخ ندهد.
+     ============================================================ */
+  function liveApi() {
+    try { return (window.Telegram && window.Telegram.WebApp) || null; }
+    catch (e) { return null; }
+  }
+  function hasSdk() { return !!liveApi(); }
+  function liveInitData() {
+    var a = liveApi();
+    try { return (a && a.initData) || ''; } catch (e) { return ''; }
+  }
+  function liveUser() {
+    var a = liveApi();
+    try { return (a && a.initDataUnsafe && a.initDataUnsafe.user) || null; } catch (e) { return null; }
+  }
+  /** اطلاعات تشخیصی برای صفحهٔ قفل (کمک به دیباگ از راه دور) */
+  function diag() {
+    var a = liveApi();
+    var d = { sdk: !!a, version: '', platform: '', initLen: 0, hasUser: false };
+    if (!a) return d;
+    try {
+      d.version = a.version || '';
+      d.platform = a.platform || '';
+      d.initLen = (a.initData || '').length;
+      d.hasUser = !!(a.initDataUnsafe && a.initDataUnsafe.user);
+    } catch (e) { /* noop */ }
+    return d;
+  }
+
+  /* ============================================================
      تم — نگاشت themeParams تلگرام به متغیرهای CSS
      ============================================================ */
   var themeApplied = false;
@@ -234,6 +266,11 @@
     version: (tg && tg.version) || '',
     platform: (tg && tg.platform) || '',
     colorScheme: (tg && tg.colorScheme) || '',
+
+    hasSdk: hasSdk,
+    liveInitData: liveInitData,
+    liveUser: liveUser,
+    diag: diag,
 
     init: init,
     applyTheme: applyTheme,

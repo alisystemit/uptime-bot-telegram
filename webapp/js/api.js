@@ -55,10 +55,14 @@
     try { controller = new AbortController(); } catch (e) { controller = null; }
 
     var timeout = null;
+    // initData به‌صورت زنده خوانده می‌شود تا اگر هنگام لود اسکریپت
+    // هنوز آماده نبود، درخواست‌ها با مقدار تازه ارسال شوند.
+    var liveInit = '';
+    try { liveInit = (NS.tg.liveInitData ? NS.tg.liveInitData() : NS.tg.initData) || ''; } catch (e) { liveInit = ''; }
     var options = {
       method: opts.method || 'GET',
       headers: {
-        'X-Telegram-Init-Data': NS.tg.initData,
+        'X-Telegram-Init-Data': liveInit,
         'Accept': 'application/json'
       },
       cache: 'no-store'

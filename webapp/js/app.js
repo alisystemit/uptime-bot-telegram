@@ -67,23 +67,50 @@
     if (on) els.progressText.textContent = text || '';
   }
 
-  /** صفحهٔ قفل (بیرون از تلگرام یا خطای دسترسی) */
-  function locked(title, sub, icon) {
+  /**
+   * صفحهٔ قفل — همیشه دکمهٔ «تلاش مجدد» دارد تا بن‌بست رخ ندهد.
+   * opts: { retry?:bool, bot?:string(username بدون @), diag?:string }
+   */
+  function locked(title, sub, icon, opts) {
+    opts = opts || {};
     try {
       stopTimers();
       var app = document.getElementById('app');
       if (app) app.style.display = 'none';
+      var btns = '';
+      if (opts.retry !== false) {
+        btns += '<button class="lock-btn" onclick="location.reload()">🔄 تلاش مجدد</button>';
+      }
+      if (opts.bot) {
+        var bu = String(opts.bot).replace(/[^A-Za-z0-9_]/g, '');
+        if (bu) btns += '<button class="lock-btn ghost" onclick="window.open(\'https://t.me/' + bu + '\',\'_blank\',\'noopener\')">🤖 باز کردن ربات</button>';
+      }
       document.body.innerHTML =
         '<div class="locked"><div class="card box">' +
         '<div class="lock-em">' + (icon || '🔐') + '</div>' +
         '<b>' + esc(title) + '</b>' +
         '<p>' + esc(sub) + '</p>' +
+        (btns ? '<div class="lock-btns">' + btns + '</div>' : '') +
+        (opts.diag ? '<div class="lock-diag" dir="ltr">' + esc(opts.diag) + '</div>' : '') +
         '<div class="lock-foot">آپ‌تایم مانیتورینگ • وب‌اپ تلگرام</div>' +
         '</div></div>';
       // تضمین دیده‌شدن صفحه (body به‌صورت پیش‌فرض opacity:0 است)
       document.body.classList.add('ready');
       document.body.classList.remove('booting');
     } catch (e) { /* noop */ }
+  }
+
+  /** خط تشخیصی کوتاه برای صفحهٔ قفل (کمک به دیباگ از راه دور) */
+  function lockDiag() {
+    try {
+      var d = TG.diag ? TG.diag() : { sdk: !!TG.hasTelegram };
+      var parts = ['sdk:' + (d.sdk ? 'yes' : 'no')];
+      if (d.version) parts.push('v' + d.version);
+      if (d.platform) parts.push(d.platform);
+      parts.push('init:' + (d.initLen > 0 ? d.initLen + ' chars' : 'empty'));
+      parts.push('user:' + (d.hasUser ? 'yes' : 'no'));
+      return parts.join(' • ');
+    } catch (e) { return ''; }
   }
 
   /* ============================================================
@@ -835,9 +862,26 @@
       return;
     }
 
-    if (!TG.hasTelegram || !TG.initData) {
+    // بررسی سه‌حالته با خوانش زنده (نه فقط کش لحظهٔ لود اسکریپت):
+    // ۱) بدون SDK یعنی مرورگر خارجی  ۲) با SDK ولی initData خالی یعنی مسیر بازشدن اشتباه
+    var sdkNow = false, initNow = '';
+    try { sdkNow = TG.hasSdk ? TG.hasSdk() : !!TG.hasTelegram; } catch (e) { sdkNow = !!TG.hasTelegram; }
+    try { initNow = TG.liveInitData ? TG.liveInitData() : (TG.initData || ''); } catch (e) { initNow = TG.initData || ''; }
+
+    if (!sdkNow) {
       locked('این برنامه فقط داخل تلگرام کار می‌کند',
-        'از ربات، دکمهٔ «📱 اپلیکیشن» (یا دستور /app) را بزنید.', '🔐');
+        'به نظر می‌رسد در مرورگر عادی باز شده‌اید. از داخل تلگرام، دکمهٔ «📱 اپلیکیشن» ' +
+        'ربات (یا دستور /app) را بزنید. نکته: آدرس اپ باید با https شروع شود؛ ' +
+        'تلگرام آدرس http را در مرورگر خارجی باز می‌کند.',
+        '🔐', { diag: lockDiag() });
+      return;
+    }
+    if (!initNow) {
+      locked('نشانهٔ ورود تلگرام پیدا نشد',
+        'اپ در تلگرام باز شده ولی از مسیر درست نیامده است. لینک را دستی باز نکنید و از ' +
+        '«ذخیره‌شده‌ها» اجرا نکنید؛ حتماً از دکمهٔ «📱 اپلیکیشن» داخل ربات (یا دستور /app) ' +
+        'وارد شوید. اگر تلگرام شما قدیمی است، آن را به‌روز کنید.',
+        '⚠️', { diag: lockDiag() });
       return;
     }
 

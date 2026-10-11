@@ -112,6 +112,84 @@ tools/test_miniapp_http.php → 27 PASS, 0 FAIL
 پوشش: ۴۰۱ بدون initData، ۴۰۱ با initData جعلی، ۲۰۰ همهٔ GETها،
 ۴۰۴ سایت ناموجود، ۴۰۵ برای نوشتن با GET، POST check/add/delete.
 
+## ⭐ قیاس با ربات مرجع (botsaz-faxima)
+
+ربات `botsaz-faxima` همین مینی‌اپ را دارد و **بدون مشکل کار می‌کند**.
+قیاس دقیق نشان داد تفاوت‌ها این‌هاست:
+
+| | botsaz-faxima (سالم) | ما (قبل از اصلاح) |
+|---|---|---|
+| بارگذاری SDK | `app/index.php` خط ۲۰ | ❌ **اصلاً بارگذاری نمی‌شد** |
+| ارسال initData | `?a=xxx&initData=...` (query) | فقط هدر `X-Telegram-Init-Data` |
+| POST initData | در body ارسال می‌کرد | ارسال نمی‌کرد |
+| خواندن سرور | `$_POST['initData'] ?? $_GET['initData']` | `$_SERVER['HTTP_X_TELEGRAM_INIT_DATA']` |
+
+### درس ۱ — SDK
+
+```php
+// botsaz-faxima/app/index.php خط ۲۰
+<script src="js/telegram-web-app.js"></script>
+```
+
+این تنها تفاوتی بود که اپ را از کار انداخته بود. (در کامیت قبلی اضافه شد.)
+
+### درس ۲ — initData باید در **هر سه** مسیر برود
+
+ربات مرجع فقط به query string تکیه می‌کند. ما فقط به هدر. اگر روی سرور
+شما یک **پروکسی، CDN، WAF یا Nginx با `proxy_set_header`** بین مرورگر و
+PHP باشد، ممکن است هدرهای سفارشی (`X-*`) را حذف یا بازنویسی کند — ولی
+query string چون بخشی از خود مسیر درخواست است **همیشه سالم می‌ماند**.
+
+**راه‌حل: هر سه مسیر.** اگر یکی سالم باشد، احراز هویت موفق می‌شود.
+
+```js
+// GET  → در URL
+api.php?a=overview&initData=<urlencoded>
+
+// POST → در URL و در بدنه
+api.php?a=add&initData=<urlencoded>
+Content-Type: application/x-www-form-urlencoded
+initData=<urlencoded>&target=...
+
+// هدر → همیشه هم ارسال می‌شود
+X-Telegram-Init-Data: <raw>
+```
+
+و سرور (`appapi.php`) هر سه را امتحان می‌کند و با **اولین معتبر** ادامه می‌دهد:
+
+```php
+$initDataCandidates = [
+    'header' => (string)($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? ''),
+    'get'    => (string)($_GET['initData'] ?? ''),
+    'post'   => (string)($_POST['initData'] ?? ''),
+];
+foreach ($initDataCandidates as $src => $candidate) {
+    if ($candidate === '') continue;
+    $u = MiniApp::validateInitData($candidate, botToken());
+    if ($u) { $tgUser = $u; break; }
+}
+```
+
+نکته: اولویت با هدر است چون query string هر initData را در لاگ سرور و
+`access_log` ثبت می‌کند (حدود ۳۰۰ بایت). اگر نمی‌خواهید لاگ پر شود،
+این خط را حذف کنید و فقط به هدر و POST تکیه کنید.
+
+### تست اثبات
+
+```
+═══ 4. هدر خراب + query سالم (شبیه‌سازی WAF) ═══
+  OK   waf-broken header → query rescues (got 200)
+```
+
+و در مرورگر واقعی:
+
+```
+GET  → hasInitHdr: true, hasInitQ: true
+POST → hasInitHdr: true, hasInitQ: true, bodyHasInit: true
+```
+
+---
+
 ## 🔬 ابزار قطعی: `tools/hash_debug.php`
 
 اگر لاگ نشان می‌دهد `hash` مطابقت ندارد، **قبل از نتیجه‌گیری** این ابزار را
@@ -303,6 +381,40 @@ https://domain/.../tools/initdata_debug.php?secret=<SECRET>&initData=<...>
 git pull
 ```
 
+### فایل‌های تغییرکرده
+
+```
+webapp/index.html       افزودن <script src="js/telegram-web-app.js">
+webapp/js/telegram-web-app.js   فایل جدید — SDK رسمی تلگرام (۱۱۹KB)
+webapp/js/telegram.js   انتظار برای SDK
+webapp/js/api.js        initData در هر سه مسیر + اصلاح باطل‌کردن کش
+webapp/js/app.js        حذف busy-wait
+appapi.php              خواندن initData از هر سه منبع + لاگ تشخیصی
+```
+
+### اگر باز هم مشکل داشت
+
+۱. **کش WebView تلگرام را پاک کنید.**
+
+۲. **پروکسی/CDN را بررسی کنید.** اگر Nginx دارید:
+
+   ```nginx
+   location /bots/paishin/ {
+       # هدرهای سفارشی را صریحاً پاس بده
+       proxy_set_header X-Telegram-Init-Data $http_x_telegram_init_data;
+   }
+   ```
+
+   Cloudflare یا هر WAF دیگری هم ممکن است هدرهای `X-*` را حذف کنند.
+
+۳. **`tools/transport_debug.php`** را باز کنید تا ببینید کدام مسیر سالم است.
+
+### بررسی اینکه SDK واقعاً بارگذاری شده
+
+```bash
+git pull
+```
+
 سپس فقط این فایل‌ها تغییر کرده‌اند:
 
 ```
@@ -338,7 +450,28 @@ https://domain/.../tools/initdata_debug.php?secret=<SECRET>&initData=<...>
 اگر این صفحه ۴۰۳ داد ⇒ secret اشتباه است.
 اگر ۵۰۰ داد ⇒ فایل‌های `tools/` آپلود نشده‌اند.
 
-### گام ۱ — تشخیص علت خطا
+### گام ۰ — مطمئن شوید initData اصلاً می‌رسد
+
+اگر هنوز «احراز هویت انجام نشد» می‌بینید، ممکن است initData اصلاً به سرور
+نرسد (پروکسی هدر را حذف کرده). این ابزار هر سه مسیر را جدا گزارش می‌کند:
+
+```
+https://domain/.../tools/transport_debug.php?secret=<SECRET>&initData=<...>
+```
+
+```
+── 1. header X-Telegram-Init-Data ──
+   length : (empty)          ← پروکسی هدر را برداشته!
+── 2. query string ?initData= ──
+   length : 285
+── 3. POST body initData ──
+   length : (empty)
+```
+
+اگر هدر خالی ولی query پر است، مشکل از پروکسی/CDN است. (با اصلاح جدید
+اپ باید کار کند، ولی علت را می‌توانید برطرف کنید.)
+
+### گام ۱ — تشخیص علت هش
 
 اگر پیام «احراز هویت انجام نشد» می‌بینید:
 

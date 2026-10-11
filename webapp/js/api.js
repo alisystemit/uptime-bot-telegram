@@ -13,13 +13,20 @@
   var cache = {};                 // کش پاسخ GET
 
   /* ---------- ساخت URL ---------- */
-  function buildUrl(action, params) {
+  // initData علاوه بر هدر، در query string هم فرستاده می‌شود.
+  // دلیل: بعضی پروکسی‌ها/WAFها هدرهای سفارشی را حذف یا دستکاری
+  // می‌کنند، ولی query string چون بخشی از مسیر درخواست است سالم می‌ماند.
+  // سرور (appapi.php) هر دو را می‌خواند و هرکدام سالم باشد کافی است.
+  function buildUrl(action, params, initData) {
     var q = '?a=' + encodeURIComponent(action);
     if (params) {
       Object.keys(params).forEach(function (k) {
         if (params[k] === undefined || params[k] === null) return;
         q += '&' + encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
       });
+    }
+    if (initData) {
+      q += '&initData=' + encodeURIComponent(initData);
     }
     return API + q;
   }
@@ -135,31 +142,41 @@
    */
   function call(action, params, method, useCache) {
     method = method || 'GET';
-    var url = buildUrl(action, method === 'GET' ? params : null);
 
-    if (method === 'GET' && useCache) {
-      var c = cache[url];
-      if (c && (Date.now() - c.t) < CACHE_TTL) {
-        return Promise.resolve({ status: 200, json: c.d, _cached: true });
-      }
-    }
-
-    var body = '';
-    if (method !== 'GET' && params) {
-      body = Object.keys(params).map(function (k) {
-        return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-      }).join('&');
-    }
-
-    // initData ممکن است هنوز آماده نباشد ⇒ قبل از ارسال صبر می‌کنیم
+    // initData در هر دو مسیر فرستاده می‌شود:
+    //   • هدر  X-Telegram-Init-Data
+    //   • query string  ?initData=...
+    // اول صبر می‌کنیم تا SDK آماده شود، بعد URL را می‌سازیم چون
+    // buildUrl به initData نیاز دارد.
     return waitInitData(4000).then(function (liveInit) {
+      var url = buildUrl(action, method === 'GET' ? params : null, liveInit);
+
+      if (method === 'GET' && useCache) {
+        var c = cache[url];
+        if (c && (Date.now() - c.t) < CACHE_TTL) {
+          return { status: 200, json: c.d, _cached: true };
+        }
+      }
+
+      var body = '';
+      if (method !== 'GET' && params) {
+        body = Object.keys(params).map(function (k) {
+          return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
+        }).join('&');
+        // initData در بدنهٔ POST هم قرار می‌گیرد (مثل ربات مرجع)
+        if (liveInit) body += (body ? '&' : '') + 'initData=' + encodeURIComponent(liveInit);
+      }
+
       return request(url, { method: method, body: body, initData: liveInit }, useCache);
     });
   }
 
   /* ---------- باطل کردن کش ---------- */
+  // کلید کش شامل initData است؛ پس باید با پارامتر a شروع شود وگرنه
+  // این الگو هرگز داخل URL پیدا نمی‌شود و کش هیچ‌وقت باطل نمی‌شود.
   function bust(action) {
-    Object.keys(cache).forEach(function (k) { if (k.indexOf('a=' + action) >= 0) delete cache[k]; });
+    var needle = '?a=' + encodeURIComponent(action);
+    Object.keys(cache).forEach(function (k) { if (k.indexOf(needle) === 0) delete cache[k]; });
   }
   function bustAll() { cache = {}; }
 

@@ -46,11 +46,36 @@ try {
 }
 
 // ---------- احراز هویت initData ----------
-$initData = (string)($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? '');
-if ($initData === '') $initData = (string)($_POST['initData'] ?? ($_GET['initData'] ?? ''));
+// کلاینت initData را در هر سه مسیر می‌فرستد (هدر، query string، POST body)
+// تا اگر پروکسی یا WAF هدرهای سفارشی را حذف کرد، درخواست از کار نیفتد.
+// هرکدام که معتبر باشد کافی است — اولویت با هدر است چون کم‌هزینه‌تر است.
+$initDataCandidates = [
+    'header' => (string)($_SERVER['HTTP_X_TELEGRAM_INIT_DATA'] ?? ''),
+    'get'    => (string)($_GET['initData'] ?? ''),
+    'post'   => (string)($_POST['initData'] ?? ''),
+];
 
-$tgUser = MiniApp::validateInitData($initData, botToken());
+$initData = '';
+$initDataSource = '';
+$tgUser = null;
+foreach ($initDataCandidates as $src => $candidate) {
+    if ($candidate === '') continue;
+    $u = MiniApp::validateInitData($candidate, botToken());
+    if ($u) {
+        $initData = $candidate;
+        $initDataSource = $src;
+        $tgUser = $u;
+        break;
+    }
+    // اولین نامزد نامعتبر بود؛ نامزدهای دیگر را هم امتحان می‌کنیم
+    if ($initData === '') $initData = $candidate;
+}
+
 if (!$tgUser) {
+    // لاگ مختصر برای تشخیص از راه دور — initData خودش لاگ نمی‌شود (حجیم و حساس)
+    uptimeLog('appapi_auth_fail', 'no valid initData; present: '
+        . implode(',', array_keys(array_filter($initDataCandidates, 'strlen')))
+        . '; len=' . strlen($initData));
     $respond(401, ['ok' => false, 'error' => 'auth']);
 }
 

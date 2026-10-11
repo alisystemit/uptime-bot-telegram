@@ -31,23 +31,49 @@ class MiniApp
         $initData = trim($initData);
         if ($initData === '' || $botToken === '' || strlen($initData) > 8192) return null;
 
+        // parse_str کلیدها را دستکاری می‌کند (نقطه/فاصله → زیرخط) و در
+        // query string، «+» را به فاصله تبدیل می‌کند. چون امضای
+        // Ed25519 تلگرام base64 است و می‌تواند «+» داشته باشد، دستی
+        // و با rawurldecode تجزیه می‌کنیم تا بایت‌های اصلی بمانند.
         $fields = [];
-        parse_str($initData, $fields);
-        if (!is_array($fields) || !$fields) return null;
+        foreach (explode('&', $initData) as $chunk) {
+            if ($chunk === '') continue;
+            $eq = strpos($chunk, '=');
+            if ($eq === false) continue;
+            $fields[rawurldecode(substr($chunk, 0, $eq))] = rawurldecode(substr($chunk, $eq + 1));
+        }
+        if (!$fields) return null;
+
         $hash = $fields['hash'] ?? null;
         if (!is_string($hash) || !ctype_xdigit($hash)) return null;
-        unset($fields['hash']);
 
-        ksort($fields, SORT_STRING);
-        $pairs = [];
-        foreach ($fields as $k => $v) {
-            if (!is_string($v)) return null; // مقدار آرایه‌ای یعنی ورودی دست‌کاری‌شده
-            $pairs[] = $k . '=' . $v;
+        // برای HMAC (که ما داریم) فقط «hash» از رشتهٔ امضا کنار گذاشته
+        // می‌شود و «signature» جزو آن می‌ماند. ولی چون برخی نسخه‌های
+        // قدیمی‌تر کتابخانه‌ها/کلاینت‌ها هش را بدون signature ساخته‌اند،
+        // هر دو حالت را می‌آزماییم تا ربات در هر شرایطی بالا بیاید.
+        // (هر دو با HMAC و توکن ربات راستی‌آزمایی می‌شوند، پس
+        //  کسی نمی‌تواند بدون توکن چیزی جعل کند.)
+        $base = $fields;
+        unset($base['hash']);
+
+        $verified = false;
+        foreach ([true, false] as $dropSignature) {
+            $set = $base;
+            if ($dropSignature) unset($set['signature']);
+
+            ksort($set, SORT_STRING);
+            $pairs = [];
+            foreach ($set as $k => $v) {
+                if (!is_string($v)) { $pairs = null; break; }
+                $pairs[] = $k . '=' . $v;
+            }
+            if ($pairs === null) continue;
+
+            $secret = hash_hmac('sha256', $botToken, 'WebAppData', true);
+            $calc = hash_hmac('sha256', implode("\n", $pairs), $secret);
+            if (hash_equals($calc, $hash)) { $verified = true; break; }
         }
-        $dataCheck = implode("\n", $pairs);
-        $secret = hash_hmac('sha256', $botToken, 'WebAppData', true);
-        $calc = hash_hmac('sha256', $dataCheck, $secret);
-        if (!hash_equals($calc, $hash)) return null;
+        if (!$verified) return null;
 
         $authDate = isset($fields['auth_date']) ? (int)$fields['auth_date'] : 0;
         if ($authDate <= 0 || $authDate < time() - self::AUTH_TTL || $authDate > time() + 300) return null;

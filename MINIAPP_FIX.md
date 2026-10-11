@@ -114,6 +114,105 @@ tools/test_miniapp_http.php → 27 PASS, 0 FAIL
 
 ---
 
+## 🔎 نکتهٔ مهم: فیلد `signature` و اعتبارسنجی
+
+تلگرام از نسخهٔ 7.2/8.0 فیلد `signature` را به `initData` اضافه کرده
+(امضای Ed25519 برای اعتبارسنجی شخص‌ثالث).
+
+**این فیلد برای دو مسیر اعتبارسنجی، قاعدهٔ متفاوتی دارد:**
+
+| مسیر | چه کسی | حذف از data_check_string |
+|---|---|---|
+| HMAC-SHA256 با توکن ربات | مالک ربات (ما) | فقط `hash` — **`signature` می‌ماند** |
+| Ed25519 با کلید عمومی | شخص ثالث (بدون توکن) | هم `hash` و هم `signature` |
+
+طبق [مستندات رسمی](https://docs.telegram-mini-apps.com/platform/init-data):
+> «Key `hash` should be excluded» — فقط `hash`.
+
+پس **حذف `signature` از رشتهٔ هش برای اعتبارسنجی HMAC اشتباه است** و باعث
+رد شدن همهٔ کاربران (پیام «احراز هویت انجام نشد») می‌شود.
+
+### چرا کد ما هر دو حالت را می‌آزماید
+
+`lib/miniapp.php` به‌جای انتخاب یک قاعده، **هر دو حالت را امتحان می‌کند**:
+
+```php
+foreach ([true, false] as $dropSignature) {
+    // حالت ۱: signature داخل رشته (قاعدهٔ رسمی HMAC)
+    // حالت ۲: signature حذف می‌شود (سازگاری با نسخه‌های قدیمی)
+    ...
+    if (hash_equals($calc, $hash)) { $verified = true; break; }
+}
+```
+
+**این کار امنیت را ضعیف نمی‌کند:** هر دو حالت با HMAC و توکن ربات
+راستی‌آزمایی می‌شوند. کسی بدون توکن ربات نمی‌تواند هیچ‌کدام را جعل کند.
+
+### تجزیهٔ initData بدون `parse_str`
+
+```php
+// ❌ قبلی — مشکل‌ساز
+parse_str($initData, $fields);
+//   • کلید «user.id» را به «user_id» تبدیل می‌کند
+//   • «+» در رشتهٔ query را به فاصله تبدیل می‌کند
+//     (امضای base64 تلگرام می‌تواند «+» داشته باشد ⇒ هش ناهماهنگ)
+
+// ✅ فعلی — بایت‌های اصلی حفظ می‌شوند
+foreach (explode('&', $initData) as $chunk) {
+    if ($chunk === '') continue;
+    $eq = strpos($chunk, '=');
+    if ($eq === false) continue;
+    $fields[rawurldecode(substr($chunk, 0, $eq))] = rawurldecode(substr($chunk, $eq + 1));
+}
+```
+
+---
+
+## 🔧 ابزار تشخیص
+
+اگر کاربر دوباره پیام «احراز هویت انجام نشد» دید، به‌جای حدس‌زدن:
+
+```bash
+# initData را در فایل بگذارید و اجرا کنید
+php tools/make_initdata.php --signature > initdata.txt
+php tools/initdata_debug.php -f initdata.txt
+
+# یا از وب (فقط با secret)
+https://domain/.../tools/initdata_debug.php?secret=<SECRET>&initData=<...>
+```
+
+خروجی دقیقاً می‌گوید **کدام مرحله** رد کرده:
+
+```
+── 1. parsed keys ──
+   auth_date        len=10
+   hash             len=64     03eac71398bb2fa997…
+   signature        len=88     PYIUUce6001TO1c+/rS0ck…
+   user             len=97
+
+── 2. common problems ──
+   ✓ hash looks well-formed (64 hex chars)
+   ✓ auth_date is 0 min old
+   ✓ user.id = 777000001
+
+── 3. hash verification ──
+   ✓ MATCH  signature INCLUDED (correct per official docs for HMAC)
+
+── 4. MiniApp::validateInitData ──
+   ✓ VALID — user id 777000001 (ali_test)
+```
+
+ابزار این موارد را هم تشخیص می‌دهد:
+- **BOM (`U+FEFF`) و فاصلهٔ نامرئی** — گاهی هنگام کپی یا از هدر وارد می‌شود
+  و کلید `auth_date` را به `﻿auth_date` تبدیل می‌کند
+- نبود `hash` (اپ بیرون از تلگرام باز شده)
+- `hash` ناقص یا غیر hex
+- `auth_date` منقضی یا در آینده (اختلاف ساعت سرور)
+- `user` نامعتبر یا بدون `id`
+- تفاوت بین قاعدهٔ HMAC و Ed25519
+
+---
+
 ## 📤 چطور روی سرور اعمال کنید
 
 ```bash

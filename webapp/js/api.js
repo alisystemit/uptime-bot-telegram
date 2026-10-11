@@ -32,7 +32,7 @@
   }
 
   /* ---------- پیام فارسی خطاها ---------- */
-  function err(kind) {
+  function err(kind, detail) {
     var map = {
       auth: 'احراز هویت انجام نشد. لطفاً اپ را از داخل ربات باز کنید.',
       database: 'اختلال در دیتابیس. کمی بعد دوباره تلاش کنید.',
@@ -47,7 +47,20 @@
       network: 'اتصال برقرار نشد.',
       unknown: 'خطای ناشناخته.'
     };
-    return map[kind] || kind || 'خطا در ارتباط با سرور';
+    var base = map[kind] || kind || 'خطا در ارتباط با سرور';
+
+    // وقتی سرور HTML یا متن خام برگردانده، جزئیاتش کمک زیادی می‌کند
+    if (kind === 'json' && detail) {
+      if (/<!DOCTYPE|<html/i.test(detail)) {
+        return base + ' (سرور صفحهٔ HTML برگرداند — احتمالاً خطای PHP یا ریدایرکت)';
+      }
+      if (/Fatal error|Parse error|Warning:|Deprecated:|Notice:/i.test(detail)) {
+        var m = detail.match(/(Fatal error|Parse error|Warning|Deprecated|Notice)[^<]{0,140}/i);
+        return 'خطای PHP روی سرور: ' + (m ? m[0] : detail.slice(0, 120));
+      }
+      if (detail.length > 8) return base + ' → ' + detail.slice(0, 120);
+    }
+    return base;
   }
 
   /* ---------- خواندن پاسخ با تایم‌اوت و ابورت ---------- */
@@ -120,9 +133,28 @@
 
       fetch(url, options).then(function (r) {
         return r.text().then(function (txt) {
+          // برخی سرورها BOM یا فاصلهٔ ابتدایی اضافه می‌کنند که
+          // JSON.parse را می‌شکند. پیش از تجزیه پاکش می‌کنیم.
+          var clean = String(txt || '').replace(/^﻿/, '').trim();
+
           var j;
-          try { j = JSON.parse(txt); }
-          catch (e) { return done({ status: r.status, json: { ok: false, error: 'json' } }); }
+          try { j = JSON.parse(clean); }
+          catch (e) {
+            // پاسخ JSON نیست. علت واقعی را نگه می‌داریم تا بتوان
+            // تشخیص داد (صفحهٔ HTML خطای PHP، ریدایرکت، یا بدنهٔ خالی)
+            var snippet = String(txt || '').replace(/\s+/g, ' ').slice(0, 300);
+            if (window.console && console.warn) {
+              console.warn('[NS.api] پاسخ JSON نبود — status=' + r.status
+                + ' url=' + String(url).split('&initData=')[0]
+                + '\n  ct=' + (r.headers && r.headers.get ? r.headers.get('content-type') : '?')
+                + '\n  body=' + (snippet || '(خالی)'));
+            }
+            return done({
+              status: r.status,
+              json: { ok: false, error: 'json', detail: snippet, empty: !txt },
+              _raw: txt
+            });
+          }
           if (j && j.ok) { if (useCache && options.method === 'GET') cache[url] = { t: Date.now(), d: j }; }
           done({ status: r.status, json: j });
         });

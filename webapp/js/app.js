@@ -462,6 +462,21 @@
 
   function handleApiError(r, soft) {
     var kind = (r && r.json && r.json.error) || '';
+    var detail = (r && r.json && r.json.detail) || '';
+
+    // خطای «پاسخ JSON نبود» را جدا نشان می‌دهیم چون علت آن فنی است
+    // و کاربر باید بداند سرور چه چیزی برگردانده.
+    if (kind === 'json') {
+      var msg = A.err('json', detail);
+      toast(msg, 'err');
+      if (window.console && console.error) {
+        console.error('[NS.app] پاسخ سرور JSON نبود — status=' + r.status
+          + '\n' + msg + '\nraw=' + String(detail || '(خالی)').slice(0, 400));
+      }
+      haptic('error');
+      return;
+    }
+
     if (kind === 'auth' || r.status === 401) {
       locked('احراز هویت انجام نشد', 'لطفاً اپ را از داخل ربات باز کنید.', '🔐');
       return;

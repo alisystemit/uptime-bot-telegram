@@ -163,8 +163,13 @@ class Group
         $hub = self::get($chatId);
         if ($hub && (string)$hub['chat_type'] === 'channel') {
             // در کانال فقط «مدیر کانال» می‌تواند مانیتور اضافه کند
-            return $userId === (int)Db::get('channel_owner_' . $chatId, '0')
-                || $userId > 0 && self::isBotAdmin($userId);
+            $owner = (int)Db::get('channel_owner_' . $chatId, '0');
+            if ($owner > 0) return $userId === $owner || self::isBotAdmin($userId);
+            // اگر مالک کانال ثبت نشده باشد، از تلگرام می‌پرسیم؛ فقط status=creator
+            // مالک کانال است (بات‌ها و ادمین‌های اضافه‌شده مجاز نیستند).
+            $r = BotApi::call(botToken(), 'getChatMember', ['chat_id' => $chatId, 'user_id' => $userId]);
+            $st = (string)($r['result']['status'] ?? '');
+            return $st === 'creator' || ($userId > 0 && self::isBotAdmin($userId));
         }
         $r = BotApi::call(botToken(), 'getChatMember', ['chat_id' => $chatId, 'user_id' => $userId]);
         if (empty($r['ok'])) {

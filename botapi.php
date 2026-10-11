@@ -15,9 +15,36 @@ class BotApi
      */
     private static bool $offline = false;
 
+    /**
+     * «صندوق خروجی» فقط برای حالت آفلاین/تست.
+     * در حالت آفلاین هیچ درخواستی به تلگرام نمی‌رود؛ در عوض هر فراخوانی
+     * با متد و پارامترهایش اینجا ثبت می‌شود تا تست‌ها بتوانند خروجیِ واقعیِ
+     * ربات (متن پیام‌ها و کیبوردها) را بسنجند، نه صرفاً «خطا نداد».
+     * در اجرای واقعی هرگز چیزی ثبت نمی‌شود چون $offline پیش‌فرض false است.
+     */
+    private static array $outbox = [];
+
     public static function offline(bool $on = true): void
     {
         self::$offline = $on;
+    }
+
+    /** ثبت یک فراخوانی در صندوق خروجی (فقط حالت آفلاین) */
+    private static function capture(string $method, array $params): void
+    {
+        self::$outbox[] = ['method' => $method, 'params' => $params];
+    }
+
+    /** همهٔ فراخوانی‌های ثبت‌شده در حالت آفلاین */
+    public static function outbox(): array
+    {
+        return self::$outbox;
+    }
+
+    /** خالی‌کردن صندوق خروجی */
+    public static function clearOutbox(): void
+    {
+        self::$outbox = [];
     }
 
     /** لاگ شکست API — هرگز توکن را در پیام نمیاورد */
@@ -38,6 +65,7 @@ class BotApi
     {
         if ($token === '' || $method === '') return ['ok' => false, 'description' => 'empty token/method'];
         if (self::$offline) {
+            self::capture($method, $params);
             return ['ok' => true, 'offline' => true, 'result' => ['message_id' => 0]];
         }
         if (!function_exists('curl_init')) { self::logFail($method, 'curl missing'); return ['ok' => false, 'description' => 'curl missing']; }
@@ -201,5 +229,64 @@ class BotApi
             'parse_mode' => $caption !== '' ? 'HTML' : null,
             'reply_markup' => $replyMarkup,
         ]);
+    }
+
+    /**
+     * ارسال یک «سند» از محتوای متنی (بدون نیاز به فایل روی دیسک کاربر).
+     * برای خروجی CSV/JSON و گزارش SLA استفاده می‌شود.
+     * در حالت آفلاین پاسخ موفق ساختگی برمی‌گرداند (بدون تماس شبکه).
+     */
+    public static function sendDocumentContent(string $token, $chatId, string $filename, string $content, string $caption = ''): array
+    {
+        if ($token === '' || (int)$chatId === 0) return ['ok' => false, 'description' => 'empty chat/token'];
+        if (self::$offline) {
+            self::capture('sendDocument', ['chat_id' => $chatId, 'filename' => $filename, 'content' => $content, 'caption' => $caption]);
+            return ['ok' => true, 'offline' => true, 'result' => ['message_id' => 0]];
+        }
+        if (!function_exists('curl_init') || !class_exists('CURLFile')) {
+            self::logFail('sendDocument', 'curl/CURLFile missing');
+            return ['ok' => false, 'description' => 'curl/CURLFile missing'];
+        }
+        $tmp = @tempnam(sys_get_temp_dir(), 'upt_doc_');
+        if ($tmp === false) return ['ok' => false, 'description' => 'temp file failed'];
+        @file_put_contents($tmp, $content);
+
+        $post = [
+            'chat_id'  => $chatId,
+            'document' => new CURLFile($tmp, 'application/octet-stream', $filename),
+        ];
+        if ($caption !== '') { $post['caption'] = mb_substr($caption, 0, 1000); $post['parse_mode'] = 'HTML'; }
+
+        $attempt = 0;
+        $lastErr = '';
+        while ($attempt <= self::$maxRetries) {
+            if ($attempt > 0) usleep(self::$baseDelay * (2 ** ($attempt - 1)));
+            $ch = curl_init("https://api.telegram.org/bot{$token}/sendDocument");
+            if ($ch === false) { $lastErr = 'curl_init failed'; $attempt++; continue; }
+            $opts = [
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_POST           => true,
+                CURLOPT_POSTFIELDS     => $post,
+                CURLOPT_TIMEOUT        => 60,
+                CURLOPT_CONNECTTIMEOUT => 15,
+            ];
+            if (self::$proxy) $opts[CURLOPT_PROXY] = self::$proxy;
+            curl_setopt_array($ch, $opts);
+            $out  = curl_exec($ch);
+            $err  = curl_error($ch);
+            $http = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            unset($ch); // curl_close در PHP 8 بی‌اثر است
+            if ($out === false) { $lastErr = $err; $attempt++; continue; }
+            if ($http === 429) { usleep(self::$baseDelay * (2 ** $attempt)); $attempt++; continue; }
+            $j = json_decode($out, true);
+            if (!is_array($j)) { $lastErr = 'Invalid JSON response'; $attempt++; continue; }
+            @unlink($tmp);
+            if (!empty($j['ok'])) return $j;
+            self::logFail('sendDocument', 'error_code=' . ($j['error_code'] ?? '-') . ' — ' . ($j['description'] ?? ''));
+            return $j;
+        }
+        @unlink($tmp);
+        self::logFail('sendDocument', 'Max retries exceeded — ' . $lastErr);
+        return ['ok' => false, 'description' => 'Max retries exceeded: ' . $lastErr];
     }
 }

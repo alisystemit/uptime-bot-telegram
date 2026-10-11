@@ -115,6 +115,22 @@ class AffiliateProgram
     }
 
     /**
+     * قلاب فعال‌سازی پرداخت: اگر خریدار با کد دعوت آمده بود، کمیسیون ثبت می‌شود.
+     * کد در settings با کلید `ref_<userId>` نگه داشته می‌شود (از handleStartPayload).
+     */
+    public static function onPayment(int $buyerUserId, int $amountToman): void
+    {
+        if ($buyerUserId <= 0 || $amountToman <= 0) return;
+        try {
+            $code = (string)Db::get('ref_' . $buyerUserId, '');
+            if ($code === '') return;
+            self::trackPayment($code, $amountToman);
+        } catch (Throwable $e) {
+            uptimeLog('error', 'AffiliateProgram::onPayment: ' . $e->getMessage());
+        }
+    }
+
+    /**
      * داشبورد affiliate
      */
     public static function getDashboard(int $affiliateId): array
@@ -190,6 +206,17 @@ class AffiliateProgram
 
             if ($unpaid < 100000) {
                 return ['ok' => false, 'error' => 'حداقل مبلغ: ۱۰۰۰۰۰ تومان'];
+            }
+
+            // جلوگیری از درخواست تکراری: تا وقتی یک درخواستِ در انتظار هست،
+            // درخواست جدید ساخته نمی‌شود (وگرنه با هر بار زدن دکمه، همان مبلغ
+            // دوباره ثبت و بعداً دو بار پرداخت می‌شد).
+            $pending = (int)Db::val(
+                "SELECT COUNT(*) FROM `affiliate_payouts` WHERE `affiliate_id` = ? AND `status` = 'pending'",
+                [$affiliate['id']]
+            );
+            if ($pending > 0) {
+                return ['ok' => false, 'error' => 'درخواست پرداخت قبلی شما در انتظار بررسی است'];
             }
 
             // ایجاد درخواست

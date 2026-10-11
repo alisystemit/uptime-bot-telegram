@@ -70,6 +70,7 @@ class Queue
                         'export_report'  => self::handleExportReport($data),
                         'send_alert'     => self::handleSendAlert($data),
                         'webhook_event'  => self::handleWebhookEvent($data),
+                        'integration_event' => self::handleIntegrationEvent($data),
                         'cleanup'        => self::handleCleanup($data),
                         default => throw new RuntimeException('نوع کار ناشناخته: ' . $job['type']),
                     };
@@ -178,6 +179,21 @@ class Queue
         // send() تعداد webhook‌های موفق را برمی‌گرداند؛ خطای شبکه داخلش
         // گرفته می‌شود پس خطای سخت محسوب نمی‌شود (وگرنه کار بی‌نهایت retry می‌شد)
         WebhookManager::send($siteId, $event);
+        return true;
+    }
+
+    /** رویداد سایت → Slack/Discord کاربر */
+    private static function handleIntegrationEvent(array $data): bool
+    {
+        $userId = (int)($data['user_id'] ?? 0);
+        $type   = (string)($data['event_type'] ?? '');
+        $site   = is_array($data['site'] ?? null) ? $data['site'] : [];
+
+        if ($userId <= 0 || !in_array($type, ['down', 'up', 'slow'], true)) return false;
+
+        // send() اگر اتصالی نباشد false برمی‌گرداند؛ آن را خطای سخت نمی‌گیریم
+        try { SlackIntegration::send($userId, $type, $site); } catch (Throwable $e) { /* بی‌اهمیت */ }
+        try { DiscordIntegration::send($userId, $type, $site); } catch (Throwable $e) { /* بی‌اهمیت */ }
         return true;
     }
 

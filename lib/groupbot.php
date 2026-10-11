@@ -317,12 +317,14 @@ class GroupBot
         if ($rest === '' || strtolower($rest) === 'all' || $rest === 'همه') {
             $sites = Group::sites($this->chatId);
             if (!$sites) { $this->say('مانیتوری وجود ندارد.'); return; }
+            $checked = array_slice($sites, 0, 10);
             $ok = 0;
-            foreach (array_slice($sites, 0, 10) as $s) {
+            foreach ($checked as $s) {
                 $r = Monitor::checkSite((int)$s['id']);
                 $ok += !empty($r['result']['ok']) ? 1 : 0;
             }
-            $this->say("🔁 بررسی فوری انجام شد: 🟢 " . faNum($ok) . " فعال • 🔴 " . faNum(count($sites) - $ok) . " قطع");
+            $this->say("🔁 بررسی فوری انجام شد: 🟢 " . faNum($ok) . " فعال • 🔴 " . faNum(count($checked) - $ok) . " قطع"
+                . (count($sites) > count($checked) ? "\n(فقط " . faNum(count($checked)) . " مانیتور اول بررسی شد)" : ""));
             return;
         }
         $site = $this->pickSite($rest);
@@ -399,10 +401,12 @@ class GroupBot
     {
         $rest = trim($rest);
         $siteId = 0;
+        $siteName = '';
         if ($rest !== '' && $rest !== 'all' && $rest !== 'همه') {
             $site = $this->pickSite($rest);
             if (!$site) return;
             $siteId = (int)$site['id'];
+            $siteName = (string)($site['label'] !== '' ? $site['label'] : $site['target']);
         }
         $rows = $siteId > 0
             ? Stats::incidents($siteId, 10)
@@ -421,7 +425,9 @@ class GroupBot
         foreach ($rows as $i) {
             $open = empty($i['end_at']);
             $dur = $open ? max(0, time() - (int)strtotime((string)$i['start_at'])) : (int)$i['duration'];
-            $name = (string)($i['label'] !== '' ? $i['label'] : ($i['target'] ?? ''));
+            $name = (string)($i['label'] ?? '');
+            if ($name === '') $name = (string)($i['target'] ?? '');
+            if ($name === '') $name = $siteName;
             $txt .= (string)$i['kind'] === 'down' ? '🔴' : '🟠';
             $txt .= " <code>#" . faNum((int)$i['site_id']) . " " . tgH(truncateFa($name, 34)) . "</code>\n";
             $txt .= "    " . ((string)$i['kind'] === 'down' ? 'قطعی' : 'کندی') . ' • ' . faDuration($dur) . ($open ? ' (ادامه دارد)' : '');

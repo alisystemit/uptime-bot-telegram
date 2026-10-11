@@ -311,7 +311,8 @@ class Monitor
                 $out[$id] = self::fail('پورتی تعیین نشده');
                 continue;
             }
-            if (filter_var($host, FILTER_VALIDATE_IP) === false && strpos($host, ':') !== false) $host = '[' . $host . ']';
+            // IPv6 باید داخل براکت باشد تا URI معتبر بماند
+            if (strpos($host, ':') !== false && $host[0] !== '[') $host = '[' . $host . ']';
             $errno = 0; $errstr = '';
             $fp = @stream_socket_client('tcp://' . $host . ':' . $port, $errno, $errstr, 0, STREAM_CLIENT_CONNECT | STREAM_CLIENT_ASYNC_CONNECT);
             if (!is_resource($fp)) {
@@ -579,8 +580,21 @@ class Monitor
 
         if ($notifyKind !== null) {
             $stats['alerts'] += self::notify($site, $notifyKind, $err, $outageSec, $ms) ? 1 : 0;
+            // افزونه‌ها: وبهوک/Slack/Discord — غیرهمزمان از طریق صف
+            $ev = match ($notifyKind) {
+                'down', 'down_repeat' => 'down',
+                'up'                  => 'up',
+                'slow'                => 'slow',
+                default               => '',
+            };
+            if ($ev !== '') {
+                try { Addons::siteEvent($site, $ev, $err, $ms); } catch (Throwable $e) { /* بی‌اهمیت */ }
+            }
         } elseif ($isSlow !== $wasSlow) {
             $stats['alerts'] += self::notify($site, $isSlow ? 'slow' : 'slow_ok', $err, 0, $ms) ? 1 : 0;
+            if ($isSlow) {
+                try { Addons::siteEvent($site, 'slow', $err, $ms); } catch (Throwable $e) { /* بی‌اهمیت */ }
+            }
         }
     }
 
@@ -799,6 +813,7 @@ class Monitor
                 tgSend($cid, $text);
             }
             Db::logEvent((int)$s['user_id'], 'alert_ssl', (string)$s['target']);
+            try { Addons::sslEvent($s); } catch (Throwable $e) { /* بی‌اهمیت */ }
         }
 
         // ---------- ۲) انقضای دامنه (WHOIS) ----------

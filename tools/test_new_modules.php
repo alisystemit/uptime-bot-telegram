@@ -34,10 +34,10 @@ function section(string $t): void
 // ---------- 1) بارگذاری همهٔ ماژول‌ها ----------
 section('1. Class loading');
 $classes = [
-    'Cache', 'WebhookManager', 'SLAReport', 'Queue',
+    'WebhookManager', 'SLAReport', 'Queue',
     'AnomalyDetector', 'SlackIntegration', 'DiscordIntegration',
     'IntegrationManager', 'ImportExport', 'Analytics',
-    'StatusPageGenerator', 'AffiliateProgram',
+    'AffiliateProgram', 'Addons',
 ];
 foreach ($classes as $c) {
     if (class_exists($c)) ok("class $c");
@@ -207,17 +207,12 @@ if ($uid > 0) {
     echo "  SKIP no user with sites\n";
 }
 
-// ---------- 11) Cache ----------
-section('11. Cache');
-$cs = Cache::status();
-ok('Cache::status → ' . json_encode($cs, JSON_UNESCAPED_UNICODE));
-if (!empty($cs['enabled'])) {
-    Cache::set('test:key', ['a' => 1], 60);
-    $v = Cache::get('test:key');
-    if ($v !== null) ok('Cache get/set roundtrip → ' . json_encode($v, JSON_UNESCAPED_UNICODE));
-    else bad('Cache roundtrip', 'null');
-    Cache::del('test:key');
-}
+// ---------- 11) Addons layer ----------
+section('11. Addons');
+$as = Addons::status();
+ok('Addons::status → ' . json_encode($as, JSON_UNESCAPED_UNICODE));
+if (isset($as['queue']['pending'], $as['flags']['webhook'])) ok('Addons::status structure');
+else bad('Addons::status', 'missing keys');
 
 // ---------- 12) Integrations ----------
 section('12. Integrations');
@@ -264,23 +259,8 @@ if ($uid > 0) {
     }
 }
 
-// ---------- 14) Status page ----------
-section('14. StatusPageGenerator');
-$tok = (string)Db::val('SELECT `share_token` FROM `user` WHERE `share_token` <> "" LIMIT 1');
-if ($tok !== '') {
-    try {
-        $html = StatusPageGenerator::generateHTML($tok);
-        if (is_string($html) && strpos($html, '</html>') !== false) ok('generateHTML');
-        else bad('generateHTML', 'invalid output');
-    } catch (Throwable $e) {
-        bad('StatusPageGenerator', $e->getMessage());
-    }
-} else {
-    echo "  SKIP no user share_token\n";
-}
-
-// ---------- 15) Webhooks ----------
-section('15. WebhookManager');
+// ---------- 14) Webhooks ----------
+section('14. WebhookManager');
 $anySite = $site ?: Db::one('SELECT * FROM `site` ORDER BY id DESC LIMIT 1');
 if ($anySite) {
     try {

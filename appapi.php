@@ -88,7 +88,9 @@ if ((int)($user['is_blocked'] ?? 0) === 1) {
 }
 
 $action = trim((string)($_GET['a'] ?? 'overview'));
-$id = (int)($_GET['id'] ?? 0);
+// id هم از query string و هم از بدنهٔ POST خوانده می‌شود تا در هر دو حالت
+// (کلاینت‌های قدیمی id را در body می‌فرستند) درست کار کند.
+$id = (int)($_GET['id'] ?? $_POST['id'] ?? 0);
 
 // عملیات نوشتنی فقط با POST و فقط برای کاربرانِ دارای دسترسی
 $writes = ['check', 'pause', 'resume', 'delete', 'add'];

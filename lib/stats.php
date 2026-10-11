@@ -213,12 +213,15 @@ class Stats
     public static function daily(array $site, int $days = 30): array
     {
         $days = max(2, min(90, $days));
+        // bucket در UTC ذخیره می‌شود ولی کلیدهای روز در حلقه به وقت محلی‌اند؛
+        // پس گروه‌بندی هم باید به وقت محلی باشد تا میله‌های نمودار جابه‌جا نشوند.
+        $shift = (int)round(tzOffset() * 3600);
         try {
             $rows = Db::all(
-                'SELECT DATE(`bucket`) d, SUM(`checks`) c, SUM(`ok`) o, SUM(`total_ms`) m
+                'SELECT DATE(`bucket` + INTERVAL ' . $shift . ' SECOND) d, SUM(`checks`) c, SUM(`ok`) o, SUM(`total_ms`) m
                    FROM `uptime_hour`
                   WHERE `site_id` = ? AND `bucket` >= DATE_SUB(NOW(), INTERVAL ' . $days . ' DAY)
-                  GROUP BY DATE(`bucket`)',
+                  GROUP BY DATE(`bucket` + INTERVAL ' . $shift . ' SECOND)',
                 [(int)$site['id']]
             );
         } catch (Throwable $e) {

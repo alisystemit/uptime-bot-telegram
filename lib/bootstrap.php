@@ -30,10 +30,10 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/miniapp.php';
     require_once __DIR__ . '/groupbot.php';
     require_once __DIR__ . '/paybot.php';
+    require_once __DIR__ . '/addons.php';          // افزونه‌ها (class Addons + trait AddonsUi)
     require_once __DIR__ . '/bot.php';
     
     // ===== ماژول‌های جدید =====
-    require_once __DIR__ . '/cache.php';           // Redis caching
     require_once __DIR__ . '/webhooks.php';        // Webhook‌های شخصی
     require_once __DIR__ . '/reports.php';         // گزارش SLA
     require_once __DIR__ . '/queue.php';           // صف کارها
@@ -41,7 +41,6 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/integrations.php';    // Slack/Discord
     require_once __DIR__ . '/import_export.php';   // Export/Import
     require_once __DIR__ . '/analytics.php';       // Analytics پیشرفته
-    require_once __DIR__ . '/status_page.php';     // Status page
     require_once __DIR__ . '/affiliate.php';       // برنامهٔ همکاری
 }
 

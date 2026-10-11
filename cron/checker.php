@@ -128,6 +128,7 @@ if ($optSelf) {
 
 if ($optMaint) {
     $r = Monitor::maintenance(true);
+    try { Addons::cron(); } catch (Throwable $e) { /* بی‌اهمیت */ }
     if ($optJson) {
         header('Content-Type: application/json; charset=utf-8');
         echo json_encode(['ok' => true, 'ssl' => $r['ssl'], 'domains' => $r['domains'], 'resp' => $r['resp']], JSON_UNESCAPED_UNICODE);
@@ -232,6 +233,17 @@ while ($rounds < $roundsTarget) {
     sleep($wait);
 }
 
+// ---------- افزونه‌ها: صف، ناهنجاری، SLA ماهانه، پاک‌سازی ----------
+$feat = ['queue' => ['processed' => 0, 'failed' => 0, 'skipped' => 0], 'anomaly' => 0, 'reports' => 0];
+try { $feat = Addons::cron(); } catch (Throwable $e) { uptimeLog('error', 'addons cron failed: ' . $e->getMessage()); }
+$emit(sprintf(
+    '  addons queue=%d failed=%d anomaly=%d sla=%d',
+    (int)($feat['queue']['processed'] ?? 0),
+    (int)($feat['queue']['failed'] ?? 0),
+    (int)$feat['anomaly'],
+    (int)$feat['reports']
+));
+
 $took = round(microtime(true) - $started, 1);
 $lastRound = Db::get('last_round_at');
 
@@ -247,6 +259,7 @@ if ($optJson) {
         'alerts'    => $totAlert,
         'took_sec'  => $took,
         'last_round'=> $lastRound,
+        'addons'    => $feat,
         'engine'    => Stats::engine(),
     ], JSON_UNESCAPED_UNICODE);
 } elseif (!$optQuiet) {

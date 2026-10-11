@@ -668,9 +668,15 @@ run('monitor: سایت با کلیدواژه و آستانهٔ کندی', static
 run('monitor: نگهداری با SSL/WHOIS خراب', static function () {
     Db::q("INSERT INTO `domain_watch` (`user_id`,`domain`,`created_at`) VALUES (880001,'this-domain-does-not-exist-xyz123.invalid',NOW())
            ON DUPLICATE KEY UPDATE `domain`=VALUES(`domain`)");
-    Db::q("UPDATE `site` SET `target` = 'https://this-host-does-not-exist-xyz123.invalid/', `last_check_at` = NULL");
+    // سایتِ اختصاصی برای این سناریو به‌جای UPDATE سراسری؛ چون UPDATE بی‌WHERE
+    // هدفِ همهٔ سایت‌ها را یکی می‌کرد و اگر کاربری بیش از یک سایت داشت (مثل
+    // تست sفر واقعی) کلید یکتای (user_id,chat_id,target) می‌شکست.
+    Db::q("INSERT INTO `site` (`user_id`,`target`,`type`,`host`,`port`,`share_token`,`last_check_at`,`created_at`)
+           VALUES (880001, 'https://this-host-does-not-exist-xyz123.invalid/', 'http', 'this-host-does-not-exist-xyz123.invalid', 0, ?, NULL, NOW())
+           ON DUPLICATE KEY UPDATE `last_check_at` = NULL", [makeShareToken(20)]);
     try { Monitor::maintenance(true); } catch (Throwable $e) { }
     Db::exec("DELETE FROM `domain_watch` WHERE `user_id` = 880001");
+    Db::exec("DELETE FROM `site` WHERE `user_id` = 880001");
 });
 
 run('Stats: دیتابیس خالی و مقادیر مرزی', static function () {

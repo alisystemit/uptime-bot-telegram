@@ -14,6 +14,12 @@ class Db
     private static bool $booted = false;
     private static bool $traceOn = false;
 
+    /**
+     * نسخهٔ اسکیما. هر بار جدول/ستون جدیدی به schema() اضافه شد این عدد را
+     * بالا ببرید تا روی نصب‌های قدیمی هم یک‌بار migrate اجرا شود.
+     */
+    private const SCHEMA_VERSION = 2;
+
     /** کانفیگ بارگذاری‌شده (توسط bootstrap تنظیم می‌شود) */
     private static array $cfg = [];
 
@@ -72,13 +78,23 @@ class Db
         if (self::$booted) return;
         self::$settingsCache = [];
         $pdo = self::pdo();
+        $fresh = false;
         try {
             $pdo->query('SELECT 1 FROM `settings` LIMIT 1');
-            // جدول از قبل هست → فقط ارتقاها (ستون‌های جدید + تنظیمات پیش‌فرض)
+        } catch (PDOException $e) {
+            $fresh = true;
+        }
+        // فقط وقتی جدول‌ها از قبل هستند و نسخهٔ اسکیما به‌روز است، صرفاً ارتقای
+        // ستون‌ها انجام می‌شود. در غیر این‌صورت migrate کامل اجرا می‌شود تا
+        // جدول‌هایی که در نسخه‌های بعدی اضافه شده‌اند روی نصب قدیمی هم ساخته
+        // شوند (قبلاً migrate فقط وقتی اجرا می‌شد که جدول settings وجود نداشت،
+        // پس جدول‌های تازه روی نصب‌های قدیمی هرگز ساخته نمی‌شدند).
+        if ($fresh || (int)self::get('schema_version', '0') < self::SCHEMA_VERSION) {
+            self::migrate();
+            self::set('schema_version', (string)self::SCHEMA_VERSION);
+        } else {
             self::syncColumns();
             self::seedDefaults();
-        } catch (PDOException $e) {
-            self::migrate();
         }
         self::$booted = true;
     }

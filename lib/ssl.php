@@ -34,7 +34,8 @@ class Ssl
             'disable_compression' => true,
         ]]);
 
-        $addr = strpos($host, ':') !== false && filter_var($host, FILTER_VALIDATE_IP) === false ? '[' . $host . ']' : $host;
+        // IPv6 باید داخل براکت باشد (براکت‌ها در ابتدای تابع حذف شده‌اند)
+        $addr = strpos($host, ':') !== false ? '[' . $host . ']' : $host;
         $errno = 0;
         $errstr = '';
         $fp = @stream_socket_client('ssl://' . $addr . ':' . $port, $errno, $errstr, $timeout, STREAM_CLIENT_CONNECT, $ctx);
@@ -104,7 +105,9 @@ class Ssl
             if ($n === $host) return 1;
             if (strncmp($n, '*.', 2) === 0 && strlen($host) > 2) {
                 $tail = substr($n, 1); // «.example.com»
-                if (substr($host, -strlen($tail)) === $tail && strpos($host, '.') < strlen($host) - strlen($tail)) return 1;
+                // فقط اگر پیشوندِ قبل از tail خالی نباشد (یعنی happy.example.com
+                // ولی خودِ example.com نه)
+                if (substr($host, -strlen($tail)) === $tail && substr($host, 0, strlen($host) - strlen($tail)) !== '') return 1;
             }
         }
         return 0;

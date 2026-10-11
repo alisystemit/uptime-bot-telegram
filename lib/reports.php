@@ -113,7 +113,7 @@ class SLAReport
                 $userId,
                 $days,
                 $period,
-                json_encode(['sites' => $siteReports, 'totals' => $totals]),
+                json_encode(['sites' => $siteReports, 'totals' => $totals, 'generated_at' => date('Y-m-d H:i:s'), 'period' => $period]),
             ]
         );
         $reportId = (int)Db::pdo()->lastInsertId();
@@ -155,6 +155,8 @@ class SLAReport
     public static function exportHTML(int $userId, array $report): string
     {
         $user = Db::one('SELECT * FROM `user` WHERE `id` = ?', [$userId]);
+        $userName = (string)($user['name'] ?? ('#' . $userId));
+        $genAt = (string)($report['generated_at'] ?? '—');
 
         $html = <<<HTML
 <!DOCTYPE html>
@@ -186,7 +188,7 @@ class SLAReport
     <div class="container">
         <div class="header">
             <h1>📊 گزارش SLA</h1>
-            <p>کاربر: {$user['name']} | تاریخ: {$report['generated_at']}</p>
+            <p>کاربر: {$userName} | تاریخ: {$genAt}</p>
         </div>
 
         <div class="summary">
@@ -308,9 +310,11 @@ HTML;
             $csv = self::exportCSV($report);
 
             // ذخیره فایل‌ها
+            $dir = UPTIME_ROOT . '/reports';
+            if (!is_dir($dir)) @mkdir($dir, 0755, true);
             $filename = 'sla_' . date('Y-m') . '_' . $userId;
-            file_put_contents(UPTIME_ROOT . '/reports/' . $filename . '.html', $html);
-            file_put_contents(UPTIME_ROOT . '/reports/' . $filename . '.csv', $csv);
+            @file_put_contents($dir . '/' . $filename . '.html', $html);
+            @file_put_contents($dir . '/' . $filename . '.csv', $csv);
 
             // ارسال به کاربر
             $user = Db::one('SELECT * FROM `user` WHERE `id` = ?', [$userId]);

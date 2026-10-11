@@ -333,6 +333,7 @@ class Pay
             $until = date('Y-m-d H:i:s', $base + $days * 86400);
             Db::q("UPDATE `user` SET `plan` = 'vip', `plan_until` = ?, `access` = 1, `is_blocked` = 0 WHERE `id` = ?", [$until, $uid]);
             Db::logEvent($uid, 'payment_ok', (string)$p['gateway'] . '#' . $paymentId);
+            AffiliateProgram::onPayment($uid, (int)$p['amount']);
 
             $name = (string)Db::val('SELECT `name` FROM `user` WHERE `id` = ?', [$uid]);
             tgSend($uid, "✅ <b>پرداخت شما تأیید شد</b>\n\n"

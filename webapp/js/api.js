@@ -181,7 +181,10 @@
     // اول صبر می‌کنیم تا SDK آماده شود، بعد URL را می‌سازیم چون
     // buildUrl به initData نیاز دارد.
     return waitInitData(4000).then(function (liveInit) {
-      var url = buildUrl(action, method === 'GET' ? params : null, liveInit);
+      // params در URL هر دو متد GET و POST قرار می‌گیرند، چون سرور
+      // (appapi.php) شناسهٔ `id` را از query string می‌خواند؛ فرستادن آن
+      // فقط در بدنهٔ POST باعث می‌شد عملیات چک/توقف/حذف همیشه id=0 بگیرد.
+      var url = buildUrl(action, params, liveInit);
 
       if (method === 'GET' && useCache) {
         var c = cache[url];
@@ -204,11 +207,12 @@
   }
 
   /* ---------- باطل کردن کش ---------- */
-  // کلید کش شامل initData است؛ پس باید با پارامتر a شروع شود وگرنه
-  // این الگو هرگز داخل URL پیدا نمی‌شود و کش هیچ‌وقت باطل نمی‌شود.
+  // کلید کش، URL کاملِ درخواست است (شامل دامنه، پس با «http…» شروع می‌شود)،
+  // نه فقط «?a=…». پس باید «?a=action» را در هر جای کلید جستجو کرد، وگرنه
+  // هیچ‌وقت چیزی باطل نمی‌شد و لیست تا CACHE_TTL قدیمی می‌ماند.
   function bust(action) {
     var needle = '?a=' + encodeURIComponent(action);
-    Object.keys(cache).forEach(function (k) { if (k.indexOf(needle) === 0) delete cache[k]; });
+    Object.keys(cache).forEach(function (k) { if (k.indexOf(needle) !== -1) delete cache[k]; });
   }
   function bustAll() { cache = {}; }
 

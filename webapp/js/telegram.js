@@ -243,19 +243,18 @@
      باز کردن لینک / اشتراک / پرداخت
      ============================================================ */
   function openLink(url) {
-    if (tg) { safe(function () { tg.openLink(url); return true; }); }
+    if (tg && has('openLink') && safe(function () { tg.openLink(url); return true; })) return;
     try { window.open(url, '_blank', 'noopener'); } catch (e) {}
   }
   function openTelegramLink(url) {
-    if (tg) { safe(function () { tg.openTelegramLink(url); return true; }); }
+    if (tg && has('openTelegramLink') && safe(function () { tg.openTelegramLink(url); return true; })) return;
     try { window.open(url, '_blank', 'noopener'); } catch (e) {}
   }
   function close() { safe(function () { tg.close(); }); }
   function share(url, text) {
     if (tg && has('openTelegramLink')) {
       var t = 'https://t.me/share/url?url=' + encodeURIComponent(url) + '&text=' + encodeURIComponent(text || '');
-      safe(function () { tg.openTelegramLink(t); return true; });
-      return true;
+      if (safe(function () { tg.openTelegramLink(t); return true; })) return true;
     }
     if (navigator.share) { try { navigator.share({ url: url, text: text }); return true; } catch (e) {} }
     return false;

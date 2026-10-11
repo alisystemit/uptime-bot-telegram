@@ -25,10 +25,10 @@ function check(bool $cond, string $msg): void
 // ---------- کلاس‌ها ----------
 echo "\n--- classes ---\n";
 foreach ([
-    'Cache', 'WebhookManager', 'SLAReport', 'Queue',
+    'WebhookManager', 'SLAReport', 'Queue',
     'AnomalyDetector', 'SlackIntegration', 'DiscordIntegration',
     'IntegrationManager', 'ImportExport', 'Analytics',
-    'StatusPageGenerator', 'AffiliateProgram',
+    'AffiliateProgram', 'Addons',
 ] as $c) {
     check(class_exists($c), "class $c");
 }
@@ -80,12 +80,11 @@ check(makeShareToken(20) !== makeShareToken(20), 'makeShareToken unique');
 
 check(faNum(1234567) !== '', 'faNum works');
 
-// Cache (بدون Redis باید graceful باشد)
-echo "\n--- cache fallback ---\n";
-$cs = Cache::status();
-check(is_array($cs), 'Cache::status returns array');
-check(isset($cs['enabled']), 'Cache::status has enabled key');
-check(Cache::get('no-such-key', 'fallback') === 'fallback' || Cache::status()['enabled'], 'Cache::get default honored');
+// Addons (لایهٔ یکپارچهٔ افزونه‌ها)
+echo "\n--- addons layer ---\n";
+$as = Addons::status();
+check(is_array($as), 'Addons::status returns array');
+check(isset($as['queue'], $as['flags']), 'Addons::status has queue + flags');
 
 // ---------- static analysis: فراخوانی متدهای گم‌شده ----------
 echo "\n--- cross-module method existence ---\n";
@@ -97,9 +96,8 @@ $expect = [
     ['ImportExport', ['exportCSV', 'exportJSON', 'importCSV', 'importJSON', 'backupUser']],
     ['WebhookManager', ['send', 'test', 'cleanupFailed']],
     ['IntegrationManager', ['register', 'test', 'disable']],
-    ['AffiliateProgram', ['register', 'trackSignup', 'trackPayment', 'getDashboard', 'requestPayout', 'completePayout', 'getLeaderboard']],
-    ['StatusPageGenerator', ['generateHTML']],
-    ['Cache', ['init', 'get', 'set', 'del', 'delPattern', 'status']],
+    ['AffiliateProgram', ['register', 'trackSignup', 'trackPayment', 'getDashboard', 'requestPayout', 'completePayout', 'getLeaderboard', 'onPayment']],
+    ['Addons', ['enabled', 'siteEvent', 'sslEvent', 'cron', 'status']],
 ];
 foreach ($expect as [$class, $methods]) {
     foreach ($methods as $m) {

@@ -84,14 +84,11 @@ foreach (['logs' => 'لاگ‌ها', 'reports' => 'گزارش‌ها'] as $dir =
     if (!$w) $ok = false;
 }
 
-// ---------- ۵) Redis (اختیاری) ----------
-echo $nl . "کش Redis:" . $nl;
-$st = Cache::status();
-if (!empty($st['enabled'])) {
-    echo "  ✅ متصل — " . ($st['used_memory'] ?? '?') . $nl;
-} else {
-    echo "  ⚪ تنظیم نشده یا در دسترس نیست (اختیاری — ربات بدون آن هم کار می‌کند)" . $nl;
-}
+// ---------- ۵) وضعیت افزونه‌ها ----------
+echo $nl . "افزونه‌ها:" . $nl;
+$st = Addons::status();
+echo "  ✅ وبهوک: " . (int)$st['webhooks'] . " • Slack/Discord: " . (int)$st['integrations']
+    . " • همکاران: " . (int)$st['affiliates'] . " • گزارش SLA: " . (int)$st['reports'] . $nl;
 
 // ---------- ۶) صف کارها ----------
 try {

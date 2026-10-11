@@ -9,6 +9,26 @@
   var tg = null;
   try { if (window.Telegram && window.Telegram.WebApp) tg = window.Telegram.WebApp; } catch (e) { tg = null; }
 
+  /* ------------------------------------------------------------
+     انتظار برای SDK
+     اگر اسکریپت telegram-web-app.js دیرتر از این فایل اجرا شود،
+     اینجا تا آماده‌شدنش صبر می‌کنیم تا initData خالی قفل نشود.
+     ------------------------------------------------------------ */
+  var sdkReady = !!(tg && tg.initData);
+  if (!sdkReady && !window.Telegram) {
+    (function waitForSdk(deadline) {
+      if (window.Telegram && window.Telegram.WebApp) {
+        try { tg = window.Telegram.WebApp; } catch (e) { tg = null; }
+        sdkReady = !!(tg && tg.initData);
+        if (sdkReady && typeof NS._onSdkReady === 'function') {
+          try { NS._onSdkReady(); } catch (e) { /* noop */ }
+        }
+        return;
+      }
+      if (Date.now() < deadline) setTimeout(function () { waitForSdk(deadline); }, 30);
+    })(Date.now() + 3000);
+  }
+
   var initData = (tg && tg.initData) || '';
   var tgUser = null;
   try { tgUser = (tg && tg.initDataUnsafe && tg.initDataUnsafe.user) || null; } catch (e) { /* noop */ }

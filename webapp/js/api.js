@@ -44,6 +44,25 @@
   }
 
   /* ---------- خواندن پاسخ با تایم‌اوت و ابورت ---------- */
+
+  /**
+   * صبر کن تا SDK تلگرام initData را بدهد.
+   * اگر اسکریپت SDK دیر بارگذاری شود، بدون این انتظار درخواست
+   * با initData خالی ارسال می‌شد و سرور 401 (auth) برمی‌گرداند.
+   */
+  function waitInitData(maxWait) {
+    return new Promise(function (resolve) {
+      var deadline = Date.now() + (maxWait || 4000);
+      (function poll() {
+        var v = '';
+        try { v = (NS.tg.liveInitData ? NS.tg.liveInitData() : NS.tg.initData) || ''; } catch (e) { v = ''; }
+        if (v) return resolve(v);
+        if (Date.now() < deadline) return setTimeout(poll, 40);
+        resolve(v);
+      })();
+    });
+  }
+
   function request(url, opts, useCache) {
     var isGet = (opts.method || 'GET') === 'GET';
     // فقط درخواست‌های GET خوانا ابورت خودکار دارند؛
@@ -55,10 +74,12 @@
     try { controller = new AbortController(); } catch (e) { controller = null; }
 
     var timeout = null;
-    // initData به‌صورت زنده خوانده می‌شود تا اگر هنگام لود اسکریپت
-    // هنوز آماده نبود، درخواست‌ها با مقدار تازه ارسال شوند.
-    var liveInit = '';
-    try { liveInit = (NS.tg.liveInitData ? NS.tg.liveInitData() : NS.tg.initData) || ''; } catch (e) { liveInit = ''; }
+    // initData از قبل توسط waitInitData آماده شده؛ اگر خالی بود یک‌بار
+    // دیگر به‌صورت زنده از SDK خوانده می‌شود.
+    var liveInit = opts.initData || '';
+    if (!liveInit) {
+      try { liveInit = (NS.tg.liveInitData ? NS.tg.liveInitData() : NS.tg.initData) || ''; } catch (e) { liveInit = ''; }
+    }
     var options = {
       method: opts.method || 'GET',
       headers: {
@@ -129,7 +150,11 @@
         return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
       }).join('&');
     }
-    return request(url, { method: method, body: body }, useCache);
+
+    // initData ممکن است هنوز آماده نباشد ⇒ قبل از ارسال صبر می‌کنیم
+    return waitInitData(4000).then(function (liveInit) {
+      return request(url, { method: method, body: body, initData: liveInit }, useCache);
+    });
   }
 
   /* ---------- باطل کردن کش ---------- */

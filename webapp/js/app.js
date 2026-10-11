@@ -872,17 +872,22 @@
       return { sdkNow: sdkNow, initNow: initNow };
     }
 
-    // چندبار امتحان می‌کنیم تا SDK تلگرام و initData آماده شود
+    // انتظار غیرمسدودکننده تا آماده‌شدن SDK و initData
+    // (telegram-web-app.js قبل از این فایل بارگذاری می‌شود، ولی در
+    //  مرورگرهای کند initData ممکن است دیرتر آماده شود)
     var sdkNow = false, initNow = '';
-    for (var _i = 0; _i < 10; _i++) {
+    (function waitSdk(tries) {
       var _r = checkTelegramSdk();
       sdkNow = _r.sdkNow;
       initNow = _r.initNow;
-      if (sdkNow && initNow) break;
-      // کوتاه موند
-      var _s = Date.now();
-      while (Date.now() - _s < 150) { /* busy wait */ }
-    }
+      if ((sdkNow && initNow) || tries <= 0) {
+        bootAfterSdk();
+        return;
+      }
+      setTimeout(function () { waitSdk(tries - 1); }, 60);
+    })(40);
+
+    function bootAfterSdk() {
 
     if (!sdkNow) {
       locked('این برنامه فقط داخل تلگرام کار می‌کند',
@@ -927,6 +932,7 @@
       haptic('light');
       document.body.removeEventListener('touchstart', once);
     }, { passive: true, once: true });
+    } // پایان bootAfterSdk
   }
 
   /* ============================================================

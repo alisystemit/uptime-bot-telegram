@@ -284,7 +284,7 @@ class Monitor
                     ];
                 }
                 curl_multi_remove_handle($mh, $ch);
-                curl_close($ch);
+                unset($ch); // curl_close() از PHP 8.0 بی‌اثر و در 8.5 deprecated است
             }
         } finally {
             // جلوگیری از تسریب حافظه حتی اگر استثنا رخ داده باشد

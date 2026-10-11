@@ -1,17 +1,27 @@
 <?php
-<?php
 /**
- * ===== چک سلامت سیستم (System Health Check) =====
- * اجرای: php tools/health.php [--json] [--full]
+ * ===== بررسی سلامت ربات (CLI یا وب) =====
+ *
+ * CLI :  php tools/health.php [--full] [--json]
+ * وب  :  https://domain/bots/paishin/tools/health.php?secret=<cron secret>
+ *
+ * توجه: فقط با secret یا از خط فرمان باز می‌شود.
  */
 
 if (PHP_SAPI !== 'cli') {
-    http_response_code(403);
-    exit('Forbidden');
+    require_once dirname(__DIR__) . '/lib/bootstrap.php';
+    $cfg = appConfig();
+    $expected = hash('sha256', (string)($cfg['bot_token'] ?? '') . '_uptime_webhook_secret');
+    $given = (string)($_GET['secret'] ?? ($_SERVER['HTTP_X_SECRET'] ?? ''));
+    if ($given === '' || !hash_equals($expected, $given)) {
+        http_response_code(403);
+        exit('Forbidden');
+    }
 }
 
-define('UPTIME_ROOT', dirname(__DIR__));
-require_once UPTIME_ROOT . '/lib/bootstrap.php';
+// نکته: UPTIME_ROOT را اینجا define نکن — وگرنه بلوک if (!defined(...))
+// در bootstrap.php همهٔ require ها را رد می‌کند و کلاس Db/Stats/... بارگذاری نمی‌شود.
+require_once dirname(__DIR__) . '/lib/bootstrap.php';
 
 $options = getopt('', ['json', 'full']);
 
@@ -26,12 +36,12 @@ $results = [
 
 function check(string $name, bool $ok, string $message = '', array $details = []): array
 {
-    global $results;
+    global $results, $full;
     $status = $ok ? 'ok' : 'fail';
     if ($status === 'fail') {
         $results['status'] = 'fail';
     }
-    
+
     $item = [
         'name' => $name,
         'status' => $status,
@@ -44,114 +54,164 @@ function check(string $name, bool $ok, string $message = '', array $details = []
     return $item;
 }
 
-// 1. PHP Extensions
-check('PHP Version', version_compare(PHP_VERSION, '8.1', '>='), 'PHP ' . PHP_VERSION);
-check('curl', extension_loaded('curl'));
-check('pdo', extension_loaded('pdo'));
-check('pdo_mysql', extension_loaded('pdo_mysql'));
-check('openssl', extension_loaded('openssl'));
-check('mbstring', extension_loaded('mbstring'));
-check('json', extension_loaded('json'));
-check('proc_open', function_exists('proc_open'), function_exists('proc_open') ? 'Available (for ping)' : 'Not available - ping will fallback to TCP');
-check('stream_socket_client', function_exists('stream_socket_client'));
+// ---------- افزونه‌ها ----------
+check('PHP Version', version_compare(PHP_VERSION, '8.0', '>='), PHP_VERSION);
+check('curl', extension_loaded('curl'), extension_loaded('curl') ? 'ok' : 'cURL extension missing');
+check('pdo', extension_loaded('pdo'), extension_loaded('pdo') ? 'ok' : 'PDO extension missing');
+check('pdo_mysql', extension_loaded('pdo_mysql'), extension_loaded('pdo_mysql') ? 'ok' : 'pdo_mysql missing');
+check('openssl', extension_loaded('openssl'), extension_loaded('openssl') ? 'ok' : 'openssl missing');
+check('mbstring', extension_loaded('mbstring'), extension_loaded('mbstring') ? 'ok' : 'mbstring missing');
+check('json', function_exists('json_encode'), function_exists('json_encode') ? 'ok' : 'json missing');
+check('proc_open', function_exists('proc_open'),
+    function_exists('proc_open') ? 'Available (for ping)' : 'unavailable — ICMP ping disabled');
+check('stream_socket_client', function_exists('stream_socket_client'),
+    function_exists('stream_socket_client') ? 'ok' : 'missing — tcp/udp checks disabled');
 
-// 2. Files & Permissions
-check('config.php exists', file_exists(UPTIME_ROOT . '/config.php'));
-check('logs directory', is_dir(UPTIME_ROOT . '/logs'), is_dir(UPTIME_ROOT . '/logs') ? 'Exists' : 'Missing - will be created');
-if (is_dir(UPTIME_ROOT . '/logs')) {
-    check('logs writable', is_writable(UPTIME_ROOT . '/logs'));
+// ---------- فایل‌ها ----------
+$root = dirname(__DIR__);
+check('config.php exists', is_file($root . '/config.php'), 'ok');
+
+$logsDir = $root . '/logs';
+if (!is_dir($logsDir)) @mkdir($logsDir, 0755, true);
+check('logs directory', is_dir($logsDir), is_dir($logsDir) ? 'Exists' : 'cannot create');
+check('logs writable', is_writable($logsDir), is_writable($logsDir) ? 'ok' : 'not writable');
+
+$reportsDir = $root . '/reports';
+if (!is_dir($reportsDir)) @mkdir($reportsDir, 0755, true);
+check('reports writable', is_dir($reportsDir) && is_writable($reportsDir),
+    (is_dir($reportsDir) && is_writable($reportsDir)) ? 'ok' : 'not writable');
+
+// ---------- کانفیگ ----------
+$cfg = appConfig();
+$unfilled = [];
+foreach (['bot_token', 'admin_id', 'bot_username', 'domain', 'base_url'] as $k) {
+    $v = (string)($cfg[$k] ?? '');
+    if ($v === '' || $v[0] === '{') $unfilled[] = $k;
 }
+check('config filled', !$unfilled, $unfilled ? 'placeholders left: ' . implode(', ', $unfilled) : 'ok');
 
-// 3. Database
+$dbCfg = $cfg['db'] ?? [];
+$dbUnfilled = [];
+foreach (['host', 'name', 'user'] as $k) {
+    $v = (string)($dbCfg[$k] ?? '');
+    if ($v === '' || $v[0] === '{') $dbUnfilled[] = $k;
+}
+check('db config filled', !$dbUnfilled, $dbUnfilled ? 'placeholders left: ' . implode(', ', $dbUnfilled) : 'ok');
+
+// ---------- دیتابیس ----------
+$dbOk = false;
+$dbMsg = '';
 try {
-    appBoot(false);
-    $pdo = Db::pdo();
-    check('DB Connection', true, 'Connected');
-    
-    // Check tables
-    $tables = $pdo->query("SHOW TABLES")->fetchAll(PDO::FETCH_COLUMN);
-    $required = ['user', 'site', 'check_log', 'uptime_hour', 'incident', 'settings'];
-    foreach ($required as $t) {
-        check("Table $t", in_array($t, $tables, true));
-    }
+    Db::setConfig($cfg);
+    Db::pdo()->query('SELECT 1');
+    $dbOk = true;
+    $dbMsg = 'ok';
 } catch (Throwable $e) {
-    check('DB Connection', false, $e->getMessage());
+    $dbMsg = $e->getMessage();
 }
+check('DB Connection', $dbOk, $dbMsg);
 
-// 4. Cron Status
-try {
-    $lastRound = Db::get('last_round_at');
-    $lastMaint = Db::get('last_maint');
-    $interval = max(10, Db::getInt('check_interval', 20));
-    
-    if ($lastRound) {
-        $diff = time() - strtotime($lastRound);
-        $ok = $diff < ($interval * 3 + 60); // Allow 3 intervals + 1 min grace
-        check('Cron - Last round', $ok, 
-            $ok ? sprintf('%.0f seconds ago', $diff) : sprintf('STALE (%.0f seconds ago)', $diff),
-            ['last_round' => $lastRound, 'diff_sec' => $diff, 'interval' => $interval]
-        );
-    } else {
-        check('Cron - Last round', false, 'Never run');
-    }
-    
-    if ($lastMaint) {
-        $diff = time() - strtotime($lastMaint);
-        check('Maintenance - Last run', true, sprintf('%.0f minutes ago', $diff/60));
-    }
-} catch (Throwable $e) {
-    check('Cron Status', false, $e->getMessage());
-}
-
-// 5. Settings
-try {
-    $pauseAll = Db::getBool('pause_all', false);
-    check('pause_all', !$pauseAll, $pauseAll ? 'PAUSED - checks disabled' : 'Active');
-    check('check_interval', true, Db::getInt('check_interval', 20) . 's');
-} catch (Throwable $e) {
-    // ignore
-}
-
-// 6. System Resources
-$free = @disk_free_space(UPTIME_ROOT);
-$total = @disk_total_space(UPTIME_ROOT);
-if ($free !== false && $total !== false) {
-    $pct = round(($free / $total) * 100, 2);
-    check('Disk space', $pct > 10, sprintf('%.1f%% free (%.2f GB)', $pct, $free / 1073741824), [
-        'free_bytes' => $free,
-        'total_bytes' => $total,
-        'pct_free' => $pct,
-    ]);
-}
-
-check('Memory usage', true, sprintf('%.2f MB / peak %.2f MB', 
-    memory_get_usage(true)/1048576, 
-    memory_get_peak_usage(true)/1048576
-));
-
-// Summary
-$results['summary'] = [
-    'total' => count($results['checks']),
-    'passed' => count(array_filter($results['checks'], fn($c) => $c['status'] === 'ok')),
-    'failed' => count(array_filter($results['checks'], fn($c) => $c['status'] === 'fail')),
-];
-
-if ($json) {
-    header('Content-Type: application/json');
-    echo json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-} else {
-    echo "=== System Health Check ===\n";
-    echo "Status: " . ($results['status'] === 'ok' ? '✓ OK' : '✗ FAIL') . "\n";
-    echo sprintf("Passed: %d / %d\n\n", $results['summary']['passed'], $results['summary']['total']);
-    
-    foreach ($results['checks'] as $c) {
-        $icon = $c['status'] === 'ok' ? '✓' : '✗';
-        echo sprintf("[%s] %s: %s\n", $icon, $c['name'], $c['message'] ?: $c['status']);
-        if ($full && isset($c['details'])) {
-            echo "  " . json_encode($c['details'], JSON_UNESCAPED_UNICODE) . "\n";
+if ($dbOk) {
+    // جدول‌های پایه
+    foreach (['user', 'site', 'check_log', 'settings', 'incident', 'uptime_hour', 'seen_update'] as $t) {
+        try {
+            $n = (int)Db::val('SELECT COUNT(*) FROM information_schema.TABLES
+                                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+                [$dbCfg['name'], $t]);
+            check("table: $t", $n > 0, $n > 0 ? 'ok' : 'missing');
+        } catch (Throwable $e) {
+            check("table: $t", false, $e->getMessage());
         }
     }
-    echo "\n=== End ===\n";
+
+    // جدول‌های ویژگی‌های جدید (اختیاری)
+    foreach (['webhooks', 'sla_reports', 'queue', 'integrations', 'affiliates'] as $t) {
+        try {
+            $n = (int)Db::val('SELECT COUNT(*) FROM information_schema.TABLES
+                                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?',
+                [$dbCfg['name'], $t]);
+            if ($n > 0) $results['checks'][] = ['name' => "feature table: $t", 'status' => 'ok', 'message' => 'ok'];
+        } catch (Throwable $e) {
+            // بی‌صدا رد شو — ویژگی اختیاری است
+        }
+    }
+
+    // وضعیت کرون
+    try {
+        $last = (string)Db::get('last_round_at', '');
+        if ($last !== '') {
+            $age = time() - strtotime($last);
+            check('Cron Status', $age < 300, 'last round ' . round($age) . 's ago',
+                ['last_round_at' => $last]);
+        } else {
+            check('Cron Status', false, 'cron has never run — set up cron/checker.php');
+        }
+    } catch (Throwable $e) {
+        check('Cron Status', false, $e->getMessage());
+    }
+
+    // آمار
+    try {
+        $results['summary'] = [
+            'users'   => (int)Db::val('SELECT COUNT(*) FROM `user`'),
+            'sites'   => (int)Db::val('SELECT COUNT(*) FROM `site`'),
+            'incidents' => (int)Db::val('SELECT COUNT(*) FROM `incident`'),
+        ];
+    } catch (Throwable $e) {
+        // بی‌صدا
+    }
 }
 
-exit($results['status'] === 'ok' ? 0 : 1);
+// ---------- منابع ----------
+$free = @disk_free_space($root);
+$total = @disk_total_space($root);
+if ($free && $total) {
+    $pct = round($free / $total * 100, 1);
+    check('Disk space', $pct > 5, $pct . '% free (' . round($free / 1073741824, 2) . ' GB)');
+}
+check('Memory usage', true, round(memory_get_usage() / 1048576, 2) . ' MB / peak '
+    . round(memory_get_peak_usage() / 1048576, 2) . ' MB');
+
+// ---------- خروجی ----------
+$passed = 0;
+$failed = 0;
+foreach ($results['checks'] as $c) {
+    $c['status'] === 'ok' ? $passed++ : $failed++;
+}
+
+if ($json) {
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'status'   => $results['status'],
+        'passed'   => $passed,
+        'failed'   => $failed,
+        'checks'   => $results['checks'],
+        'summary'  => $results['summary'],
+    ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+    exit($failed > 0 ? 1 : 0);
+}
+
+$icon = fn(string $s): string => $s === 'ok' ? '[✓]' : '[✗]';
+
+echo "=== System Health Check ===\n";
+echo 'Status: ' . ($results['status'] === 'ok' ? '✓ OK' : '✗ FAIL') . "\n";
+echo "Passed: $passed / " . ($passed + $failed) . "\n\n";
+
+foreach ($results['checks'] as $c) {
+    echo $icon($c['status']) . ' ' . $c['name'] . ': ' . $c['message'] . "\n";
+    if ($full && isset($c['details'])) {
+        foreach ($c['details'] as $k => $v) {
+            echo "        $k: " . (is_scalar($v) ? $v : json_encode($v)) . "\n";
+        }
+    }
+}
+
+if (!empty($results['summary'])) {
+    echo "\n--- summary ---\n";
+    foreach ($results['summary'] as $k => $v) {
+        echo "  $k: $v\n";
+    }
+}
+
+echo "\n=== End ===\n";
+exit($failed > 0 ? 1 : 0);

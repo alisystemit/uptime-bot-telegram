@@ -27,10 +27,20 @@ class StatusPageGenerator
             [$user['id']]
         );
 
-        $pageTitle = $user['name'] . ' — Status Page';
-        $avgUptime = (int)array_sum(array_map(function ($s) {
-            return Stats::uptime($s, 30)['pct'];
-        }, $sites)) / count($sites);
+        $pageTitle = ($user['name'] ?: 'Status') . ' — Status Page';
+
+        // کاربر ممکن است هنوز سایتی ثبت نکرده باشد ⇒ تقسیم بر صفر رخ می‌داد
+        $avgUptime = 0.0;
+        if ($sites) {
+            $sum = 0.0;
+            foreach ($sites as $s) $sum += (float)(Stats::uptime($s, 30)['pct'] ?? 0);
+            $avgUptime = $sum / count($sites);
+        }
+
+        $sitesCount     = count($sites);
+        $incidentsCount = count($incidents30d);
+        $avgUptimeVal   = round($avgUptime, 1);
+        $nowTime        = date('H:i');
 
         $html = <<<HTML
 <!DOCTYPE html>
@@ -290,15 +300,15 @@ class StatusPageGenerator
             <div class="header-stats">
                 <div class="stat-box">
                     <div class="stat-label">سایت‌ها</div>
-                    <div class="stat-value">{count($sites)}</div>
+                    <div class="stat-value">$sitesCount</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">آپتایم ۳۰ روز</div>
-                    <div class="stat-value">{round($avgUptime, 1)}%</div>
+                    <div class="stat-value">$avgUptimeVal%</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">رویدادها</div>
-                    <div class="stat-value">{count($incidents30d)}</div>
+                    <div class="stat-value">$incidentsCount</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">وضعیت</div>
@@ -309,6 +319,11 @@ class StatusPageGenerator
 
         <div class="sites-grid">
 HTML;
+
+        if (!$sites) {
+            $html .= '<div class="site-card" style="text-align:center;color:#666;">'
+                . 'هنوز سایتی برای نمایش ثبت نشده است.</div>';
+        }
 
         foreach ($sites as $site) {
             $uptime30 = Stats::uptime($site, 30);
@@ -326,18 +341,20 @@ HTML;
                 default => '',
             };
             $uptimeClass = $uptime30['pct'] >= 99 ? '' : 'low';
+            $siteName = $site['label'] ?: $site['target'];
+            $uptimeVal = round($uptime30['pct'], 1);
 
             $html .= <<<HTML
         <div class="site-card">
             <div class="site-header">
                 <div class="status-icon $statusClass">$statusIcon</div>
-                <div class="site-name">{$site['label'] ?: $site['target']}</div>
+                <div class="site-name">$siteName</div>
             </div>
 
             <div class="site-stats">
                 <div class="site-stat">
                     <div class="site-stat-label">آپتایم ۳۰ روز</div>
-                    <div class="site-stat-value"><span class="uptime-percentage $uptimeClass">{round($uptime30['pct'], 1)}%</span></div>
+                    <div class="site-stat-value"><span class="uptime-percentage $uptimeClass">{$uptimeVal}%</span></div>
                 </div>
                 <div class="site-stat">
                     <div class="site-stat-label">زمان پاسخ</div>
@@ -345,7 +362,7 @@ HTML;
                 </div>
                 <div class="site-stat">
                     <div class="site-stat-label">آخرین بررسی</div>
-                    <div class="site-stat-value">{date('H:i')}</div>
+                    <div class="site-stat-value">$nowTime</div>
                 </div>
                 <div class="site-stat">
                     <div class="site-stat-label">وضعیت</div>
@@ -382,14 +399,17 @@ HTML;
                 $site = Db::one('SELECT * FROM `site` WHERE `id` = ?', [$inc['site_id']]);
                 $duration = $inc['duration'] ? (int)($inc['duration'] / 60) . ' دقیقه' : '—';
                 $endTime = $inc['end_at'] ? date('H:i', strtotime($inc['end_at'])) : 'درحال';
+                $siteName = ($site['label'] ?: $site['target']);
+                $incReason = $inc['reason'] ?: 'بدون دلیل ثبت‌شده';
+                $incStart  = date('Y-m-d H:i', strtotime((string)$inc['start_at']));
 
                 $html .= <<<HTML
             <div class="incident-item">
                 <div class="incident-header">
-                    <span class="incident-site">{$site['label'] ?: $site['target']}</span>
-                    <span class="incident-time">{date('Y-m-d H:i', strtotime($inc['start_at']))} → $endTime</span>
+                    <span class="incident-site">$siteName</span>
+                    <span class="incident-time">{$incStart} → $endTime</span>
                 </div>
-                <div class="incident-reason">{$inc['reason'] ?: 'بدون دلیل ثبت‌شده'}</div>
+                <div class="incident-reason">$incReason</div>
                 <div class="incident-duration">مدت: $duration</div>
             </div>
 HTML;

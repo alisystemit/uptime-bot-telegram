@@ -72,7 +72,8 @@ class BotApi
             $out = curl_exec($ch);
             $err = curl_error($ch);
             $httpCode = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-            curl_close($ch);
+            // curl_close() از PHP 8.0 بی‌اثر (GC) و در 8.5 deprecated است
+            unset($ch);
 
             if ($out === false) {
                 $lastErr = $err;

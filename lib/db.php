@@ -550,6 +550,8 @@ class Db
                 `type` VARCHAR(24) NOT NULL,
                 `url` VARCHAR(1000) NOT NULL,
                 `events` VARCHAR(255) NOT NULL DEFAULT 'down,up,slow',
+                `secret` VARCHAR(190) NOT NULL DEFAULT '',
+                `sign_algo` VARCHAR(20) NOT NULL DEFAULT 'sha256',
                 `enabled` TINYINT(1) NOT NULL DEFAULT 1,
                 `test_at` DATETIME NULL,
                 `last_used` DATETIME NULL,

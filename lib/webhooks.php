@@ -56,23 +56,22 @@ class WebhookManager
      */
     private static function dispatch(array $hook, array $event, array $site): bool
     {
-        $payload = self::format($hook['type'], $event, $site);
+        $payload = self::format((string)$hook['type'], $event, $site);
         if (!$payload) return false;
 
         $headers = ['Content-Type: application/json'];
-        if ($hook['type'] === 'slack' || $hook['type'] === 'discord') {
-            // Slack/Discord خودشان JSON می‌خواهند
-        } elseif ($hook['type'] === 'custom') {
-            // Custom: سیگنال بررسی کن
-            $signAlgo = $hook['settings']['sign_algo'] ?? null;
-            if ($signAlgo) {
-                $sig = hash_hmac($signAlgo, json_encode($payload), $hook['settings']['secret'] ?? '');
-                $headers[] = 'X-Signature: ' . $sig;
+
+        // برای webhook سفارشی: امضای HMAC (اختیاری) — فقط اگر ستون‌ها موجود باشند
+        if (($hook['type'] ?? '') === 'custom') {
+            $secret = (string)($hook['secret'] ?? '');
+            if ($secret !== '') {
+                $algo = (string)($hook['sign_algo'] ?? 'sha256');
+                $headers[] = 'X-Signature: ' . hash_hmac($algo, (string)json_encode($payload), $secret);
             }
         }
 
-        $resp = PayHttp::call($hook['url'], $payload, $headers, 'POST', 10);
-        return $resp['status'] >= 200 && $resp['status'] < 300;
+        $resp = PayHttp::call((string)$hook['url'], $payload, $headers, 'POST', 10);
+        return !empty($resp['ok']);
     }
 
     /**

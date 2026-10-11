@@ -50,11 +50,10 @@ class Ranking
     public static function pointsToNext(int $points, int $level): int
     {
         if ($level >= self::MAX_LEVEL) return 0;
-        // سطح n با امتیاز n×POINTS_PER_LEVEL شروع می‌شود
-        // سطح n+1 با امتیاز (n+1)×POINTS_PER_LEVEL شروع می‌شود
-        // پس امتیاز مورد نیاز برای رسیدن به سطح بعد = (level+1)×POINTS_PER_LEVEL - points
-        $nextLevel = min($level + 1, self::MAX_LEVEL);
-        return max(0, ($nextLevel * self::POINTS_PER_LEVEL) - $points);
+        // level(p) = 1 + intdiv(p, PPL)  ⇒  سطح n با امتیاز (n-1)×PPL شروع می‌شود
+        // پس رسیدن به سطح n+1 نیازمند (level)×PPL امتیاز است
+        if ($points < 0) $points = 0;
+        return max(0, ($level * self::POINTS_PER_LEVEL) - $points);
     }
 
     // ─────────────────────────────────────────────── پیکربندی

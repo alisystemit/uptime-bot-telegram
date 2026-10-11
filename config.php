@@ -10,28 +10,28 @@
  */
 return [
     // توکن ربات از @BotFather
-    'bot_token'    => '{BOT_TOKEN}',
+    'bot_token'    => '8923767498:AAFmbQE1eD0Fri5rc_cJuYDMdFWVRUN7Y4M',
 
     // آیدی عددی ادمین ربات (بدون @)
-    'admin_id'     => '{ADMIN_#ID}',
+    'admin_id'     => '7219410930',
 
     // یوزرنیم ربات بدون @
-    'bot_username' => '{BOT_USERNAME}',
+    'bot_username' => 'alisystemtest3_bot',
 
     // دامنه/مسیر ربات بدون https و بدون اسلش آخر
     // مثال: example.com/botsaz-faxima/bots/uptime1
-    'domain'       => '{DOMAIN.COM/PATH/BOT}',
+    'domain'       => 'froshbot.api-system.top/bots/paishin',
 
     // آدرس کامل http(s) پوشهٔ ربات — پایهٔ لینک صفحهٔ وضعیت عمومی
-    'base_url'     => '{BASE_URL}',
+    'base_url'     => 'https://froshbot.api-system.top/bots/paishin',
 
     // اتصال دیتابیس (هر ربات دیتابیس جدا دارد)
     'db' => [
-        'host' => '{DB_HOST}',
-        'port' => '{DB_PORT}',
-        'name' => '{DATABASE_NAME}',
-        'user' => '{DATABASE_USERNAME}',
-        'pass' => '{DATABASE_PASSWORD}',
+        'host' => '127.0.0.1',
+        'port' => '3306',
+        'name' => 'botsaz_paishin_f5491c',
+        'user' => 'botsaz',
+        'pass' => '4ed45aab4392bb3b225dfdc4d1981bbd',
     ],
 
     // منطقهٔ زمانی برای نمایش ساعت (ایران: 3.5)

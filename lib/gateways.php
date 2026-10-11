@@ -101,7 +101,7 @@ class PayHttp
         $res = curl_exec($ch);
         $out['status'] = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = (string)curl_error($ch);
-        curl_close($ch);
+        unset($ch); // curl_close() از PHP 8.0 بی‌اثر و در 8.5 deprecated است
 
         $out['body'] = toStr($res);
         $out['json'] = json_decode($out['body'], true);

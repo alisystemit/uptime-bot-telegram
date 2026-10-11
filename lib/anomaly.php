@@ -23,9 +23,9 @@ class AnomalyDetector
 
         // گردآوری داده‌های ۷ روز اخیر
         $checks = Db::all(
-            'SELECT `checked_at`, `is_up`, `response_ms` FROM `check_log` 
-             WHERE `site_id` = ? AND `checked_at` >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-             ORDER BY `checked_at`',
+            'SELECT `ts`, `ok`, `ms` FROM `check_log` 
+             WHERE `site_id` = ? AND `ts` >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+             ORDER BY `ts`',
             [$siteId]
         );
 
@@ -36,9 +36,9 @@ class AnomalyDetector
         // ۱. تشخیص قطع‌های زمانی منظم
         $hourCounts = array_fill(0, 24, ['down' => 0, 'total' => 0]);
         foreach ($checks as $check) {
-            $hour = (int)date('H', strtotime($check['checked_at']));
+            $hour = (int)date('H', strtotime((string)$check['ts']));
             $hourCounts[$hour]['total']++;
-            if (!$check['is_up']) {
+            if (!$check['ok']) {
                 $hourCounts[$hour]['down']++;
             }
         }
@@ -60,20 +60,20 @@ class AnomalyDetector
         }
 
         // ۲. تشخیص Latency Spike
-        $latencies = array_column($checks, 'response_ms');
-        $latencies = array_filter($latencies, fn($x) => $x > 0);
+        $latencies = array_column($checks, 'ms');
+        $latencies = array_values(array_filter($latencies, fn($x) => (int)$x > 0));
 
         if (!empty($latencies)) {
             $mean = array_sum($latencies) / count($latencies);
             $stdDev = self::calculateStdDev($latencies, $mean);
 
             foreach ($checks as $check) {
-                if ($check['is_up'] && $check['response_ms'] > 0) {
-                    if ($check['response_ms'] > ($mean + 3 * $stdDev)) {
+                if ($check['ok'] && (int)$check['ms'] > 0) {
+                    if ((int)$check['ms'] > ($mean + 3 * $stdDev)) {
                         $anomalies[] = [
                             'type' => 'latency_spike',
-                            'time' => $check['checked_at'],
-                            'latency_ms' => $check['response_ms'],
+                            'time' => $check['ts'],
+                            'latency_ms' => (int)$check['ms'],
                             'expected_ms' => (int)$mean,
                             'std_dev' => (int)$stdDev,
                             'severity' => 'warning',
@@ -86,7 +86,7 @@ class AnomalyDetector
 
         // ۳. تشخیص Pattern تغییر
         $recentDowns = array_slice($checks, -20);
-        $downCount = count(array_filter($recentDowns, fn($x) => !$x['is_up']));
+        $downCount = count(array_filter($recentDowns, fn($x) => !$x['ok']));
 
         if ($downCount > 10) {
             $anomalies[] = [

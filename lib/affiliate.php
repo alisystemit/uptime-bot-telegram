@@ -48,7 +48,7 @@ class AffiliateProgram
                 'ok' => true,
                 'message' => 'شما به برنامهٔ همکاری اضافه شدید',
                 'code' => $code,
-                'referral_link' => 'https://' . (appConfig()['domain'] ?? 'example.com') . '/t.me/bot?start=aff_' . $code,
+                'referral_link' => self::referralLink($code),
             ];
         } catch (Throwable $e) {
             uptimeLog('error', 'affiliate_register: ' . $e->getMessage());
@@ -153,7 +153,7 @@ class AffiliateProgram
         return [
             'ok' => true,
             'code' => $affiliate['code'],
-            'referral_link' => 'https://' . (appConfig()['domain'] ?? 'example.com') . '/t.me/bot?start=aff_' . $affiliate['code'],
+            'referral_link' => self::referralLink((string)$affiliate['code']),
             'stats' => [
                 'signup_count' => (int)$affiliate['signup_count'],
                 'total_commission' => (int)$affiliate['total_commission'],
@@ -193,12 +193,13 @@ class AffiliateProgram
             }
 
             // ایجاد درخواست
-            $requestId = Db::q(
+            Db::q(
                 'INSERT INTO `affiliate_payouts` 
                  (`affiliate_id`, `amount`, `method`, `status`)
                  VALUES (?, ?, ?, ?)',
                 [$affiliate['id'], $unpaid, $method, 'pending']
-            )->lastInsertId();
+            );
+            $requestId = (int)Db::pdo()->lastInsertId();
 
             // علامت‌زدن درآمدها به‌عنوان در‌حال‌پرداخت
             Db::q(
@@ -269,6 +270,18 @@ class AffiliateProgram
     }
 
     /**
+     * لینک دعوت صحیح: t.me/<bot_username>?start=aff_<code>
+     * (قبلاً از domain ساخته می‌شد که هیچ ربطی به تلگرام نداشت)
+     */
+    private static function referralLink(string $code): string
+    {
+        $cfg = appConfig();
+        $username = trim((string)($cfg['bot_username'] ?? ''));
+        if ($username === '') return '';
+        return 'https://t.me/' . ltrim($username, '@') . '?start=aff_' . $code;
+    }
+
+    /**
      * تولید کد منحصر
      */
     private static function generateCode(int $userId): string
@@ -305,7 +318,7 @@ class AffiliateProgram
             tgSend(
                 $affiliate['user_id'],
                 "💰 <b>کمیسیون شما برای پرداخت آماده است</b>\n\n"
-                . "مبلغ: " . toLocale((int)Db::val(
+                . "مبلغ: " . faNum((int)Db::val(
                     'SELECT SUM(`commission`) FROM `affiliate_earnings` 
                      WHERE `affiliate_id` = ? AND `paid_at` IS NULL',
                     [$affiliateId]

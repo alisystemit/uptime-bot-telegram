@@ -22,7 +22,7 @@ class Queue
                  VALUES (?, ?, ?, ?, NOW())',
                 [$type, json_encode($data, JSON_UNESCAPED_UNICODE), $priority, 'pending']
             );
-            return $result->lastInsertId();
+            return (int)Db::pdo()->lastInsertId();
         } catch (Throwable $e) {
             uptimeLog('queue', 'enqueue error: ' . $e->getMessage());
             return 0;
@@ -38,10 +38,10 @@ class Queue
 
         try {
             $jobs = Db::all(
-                'SELECT * FROM `queue` WHERE `status` = ? 
-                 ORDER BY `priority` DESC, `created_at` ASC 
-                 LIMIT ?',
-                ['pending', $limit]
+                'SELECT * FROM `queue` WHERE `status` = ?
+                 ORDER BY `priority` DESC, `created_at` ASC
+                 LIMIT ' . (int)$limit,
+                ['pending']
             );
 
             $deadline = time() + $timeout;
@@ -52,17 +52,26 @@ class Queue
                     break;
                 }
 
-                $data = json_decode($job['data'], true);
+                // قفل کردن کار تا worker دیگری هم‌زمان برداشتش نکند
+                $claimed = Db::q(
+                    'UPDATE `queue` SET `status` = "processing", `started_at` = NOW()
+                      WHERE `id` = ? AND `status` = "pending"',
+                    [$job['id']]
+                )->rowCount();
+                if ($claimed === 0) continue; // کار را worker دیگری برداشت
+
+                $data = json_decode((string)$job['data'], true);
+                if (!is_array($data)) $data = [];
                 $success = false;
 
                 try {
                     $success = match ($job['type']) {
-                        'check_site' => self::handleCheckSite($data),
-                        'export_report' => self::handleExportReport($data),
-                        'send_alert' => self::handleSendAlert($data),
-                        'webhook_event' => self::handleWebhookEvent($data),
-                        'cleanup' => self::handleCleanup($data),
-                        default => false,
+                        'check_site'     => self::handleCheckSite($data),
+                        'export_report'  => self::handleExportReport($data),
+                        'send_alert'     => self::handleSendAlert($data),
+                        'webhook_event'  => self::handleWebhookEvent($data),
+                        'cleanup'        => self::handleCleanup($data),
+                        default => throw new RuntimeException('نوع کار ناشناخته: ' . $job['type']),
                     };
 
                     if ($success) {
@@ -72,21 +81,20 @@ class Queue
                         );
                         $stats['processed']++;
                     } else {
-                        throw new Exception('Handler returned false');
+                        throw new RuntimeException('handler returned false');
                     }
                 } catch (Throwable $e) {
                     $attempts = (int)($job['attempts'] ?? 0);
                     if ($attempts < 3) {
-                        // تلاش دوباره
+                        // تلاش دوباره در دور بعدی
                         Db::q(
-                            'UPDATE `queue` SET `attempts` = ?, `last_error` = ? WHERE `id` = ?',
-                            [$attempts + 1, $e->getMessage(), $job['id']]
+                            'UPDATE `queue` SET `status` = "pending", `attempts` = ?, `last_error` = ? WHERE `id` = ?',
+                            [$attempts + 1, mb_substr($e->getMessage(), 0, 480), $job['id']]
                         );
                     } else {
-                        // ناموفق نهایی
                         Db::q(
                             'UPDATE `queue` SET `status` = ?, `error` = ? WHERE `id` = ?',
-                            ['failed', $e->getMessage(), $job['id']]
+                            ['failed', mb_substr($e->getMessage(), 0, 480), $job['id']]
                         );
                         $stats['failed']++;
                     }
@@ -107,31 +115,42 @@ class Queue
         if ($siteId <= 0) return false;
 
         $result = Monitor::checkSite($siteId);
-        return $result['ok'] !== null;
+        // checkSite کلید 'result' برمی‌گرداند (نه 'ok')
+        return isset($result['result']) && empty($result['result']['error']);
     }
 
-    private static function handleExportReport(array $data): bool
+    private static function handleExportReport(array $payload): bool
     {
-        $reportId = (int)($data['report_id'] ?? 0);
-        $format = $data['format'] ?? 'csv';  // csv, html, pdf
+        $reportId = (int)($payload['report_id'] ?? 0);
+        $format = in_array($payload['format'] ?? 'csv', ['csv', 'html'], true)
+            ? (string)$payload['format']
+            : 'csv';
 
         $report = Db::one('SELECT * FROM `sla_reports` WHERE `id` = ?', [$reportId]);
         if (!$report) return false;
 
-        $data = json_decode($report['data_json'], true);
+        $reportData = json_decode((string)$report['data_json'], true);
+        if (!is_array($reportData)) return false;
 
-        $content = match ($format) {
-            'csv' => self::exportCSV($data),
-            'html' => self::exportHTML($data),
-            default => '',
-        };
+        $content = $format === 'csv'
+            ? SLAReport::exportCSV($reportData)
+            : SLAReport::exportHTML((int)$report['user_id'], $reportData);
 
-        // ذخیره فایل
+        $dir = UPTIME_ROOT . '/reports';
+        if (!is_dir($dir) && !@mkdir($dir, 0755, true) && !is_dir($dir)) {
+            uptimeLog('queue', 'cannot create reports dir');
+            return false;
+        }
+        if (!is_writable($dir)) {
+            uptimeLog('queue', 'reports dir not writable');
+            return false;
+        }
+
         $filename = 'report_' . $reportId . '.' . $format;
-        @mkdir(UPTIME_ROOT . '/reports', 0755, true);
-        file_put_contents(UPTIME_ROOT . '/reports/' . $filename, $content);
+        $ok = @file_put_contents($dir . '/' . $filename, $content) !== false;
+        if (!$ok) uptimeLog('queue', 'write failed: ' . $filename);
 
-        return true;
+        return $ok;
     }
 
     private static function handleSendAlert(array $data): bool
@@ -142,24 +161,30 @@ class Queue
 
         if ($userId <= 0 || $message === '') return false;
 
-        tgSend($userId, $message, $keyboard ? ['reply_markup' => $keyboard] : []);
-        return true;
+        $extra = [];
+        if (!empty($keyboard)) $extra['reply_markup'] = $keyboard;
+        $res = tgSend($userId, $message, $extra);
+
+        return !empty($res['ok']);
     }
 
     private static function handleWebhookEvent(array $data): bool
     {
         $siteId = (int)($data['site_id'] ?? 0);
-        $event = $data['event'] ?? [];
+        $event = is_array($data['event'] ?? null) ? $data['event'] : [];
 
-        if ($siteId <= 0) return false;
+        if ($siteId <= 0 || empty($event['type'])) return false;
 
-        return WebhookManager::send($siteId, $event) > 0;
+        // send() تعداد webhook‌های موفق را برمی‌گرداند؛ خطای شبکه داخلش
+        // گرفته می‌شود پس خطای سخت محسوب نمی‌شود (وگرنه کار بی‌نهایت retry می‌شد)
+        WebhookManager::send($siteId, $event);
+        return true;
     }
 
     private static function handleCleanup(array $data): bool
     {
         // تمیزکاری دیتابیس
-        Db::q('DELETE FROM `check_log` WHERE `checked_at` < DATE_SUB(NOW(), INTERVAL 24 HOUR)');
+        Db::q('DELETE FROM `check_log` WHERE `ts` < DATE_SUB(NOW(), INTERVAL 24 HOUR)');
         Db::q('DELETE FROM `incident` WHERE `end_at` IS NOT NULL 
                AND `end_at` < DATE_SUB(NOW(), INTERVAL 180 DAY)');
 
@@ -167,16 +192,6 @@ class Queue
     }
 
     // ─────────────────────────────────────────────── Utilities
-
-    private static function exportCSV(array $report): string
-    {
-        return SLAReport::exportCSV($report);
-    }
-
-    private static function exportHTML(array $report): string
-    {
-        return SLAReport::exportHTML(0, $report);
-    }
 
     /**
      * تعداد کارهای در انتظار

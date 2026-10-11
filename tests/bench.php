@@ -69,6 +69,7 @@ bench('Stats::pauseStats', static fn() => Stats::pauseStats());
 bench('Stats::engine', static fn() => Stats::engine());
 bench('Site::detail (single)', static function () use ($uid) {
     $s = Db::one('SELECT * FROM `site` WHERE `user_id` = ? AND chat_id = 0 LIMIT 1', [$uid]);
+    if (!$s) return 0;   // کاربر تست سایتی ندارد
     Stats::uptime($s, 1); Stats::uptime($s, 7); Stats::uptime($s, 30);
     Stats::counters($s); Stats::recent($s, 60); Stats::incidents($s['id'], 12);
     return 1;

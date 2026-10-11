@@ -45,31 +45,40 @@ class SLAReport
             );
 
             $latencies = Db::all(
-                'SELECT `response_ms` FROM `check_log` 
-                 WHERE `site_id` = ? AND `checked_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)
-                 AND `response_ms` > 0',
+                'SELECT `ms` FROM `check_log` 
+                 WHERE `site_id` = ? AND `ts` >= DATE_SUB(NOW(), INTERVAL ? DAY)
+                 AND `ms` > 0',
                 [$site['id'], $days]
             );
 
             $avgLatency = !empty($latencies)
-                ? (int)array_sum(array_column($latencies, 'response_ms')) / count($latencies)
+                ? (int)array_sum(array_column($latencies, 'ms')) / count($latencies)
                 : 0;
+
+            // مدت قطع از رخدادها (منبع واحد: جدول incident)
+            $downtimeSec = (int)Db::val(
+                'SELECT COALESCE(SUM(`duration`),0) FROM `incident`
+                 WHERE `site_id` = ? AND `kind` = "down"
+                 AND `start_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)',
+                [$site['id'], $days]
+            );
 
             $report = [
                 'site_id' => $site['id'],
                 'target' => $site['target'],
                 'label' => $site['label'] ?: $site['target'],
-                'uptime_pct' => (float)$uptime['pct'],
-                'uptime_hours' => (int)($uptime['uptime_ms'] / 1000 / 3600),
-                'downtime_sec' => (int)($uptime['downtime_ms'] / 1000),
-                'downtime_formatted' => self::formatSeconds((int)($uptime['downtime_ms'] / 1000)),
+                'uptime_pct' => (float)($uptime['pct'] ?? 0),
+                'uptime_hours' => (int)round((($uptime['pct'] ?? 0) * $days * 24) / 100),
+                'downtime_sec' => $downtimeSec,
+                'downtime_formatted' => self::formatSeconds($downtimeSec),
                 'incidents_count' => count($incidents),
                 'avg_response_ms' => $avgLatency,
                 'min_response_ms' => (int)($site['resp_avg'] ?? 0),
                 'max_response_ms' => (int)($site['resp_max'] ?? 0),
+                'p95_response_ms' => (int)($site['resp_p95'] ?? 0),
                 'check_count' => (int)Db::val(
                     'SELECT COUNT(*) FROM `check_log` 
-                     WHERE `site_id` = ? AND `checked_at` >= DATE_SUB(NOW(), INTERVAL ? DAY)',
+                     WHERE `site_id` = ? AND `ts` >= DATE_SUB(NOW(), INTERVAL ? DAY)',
                     [$site['id'], $days]
                 ),
                 'incidents' => array_map(function ($i) {
@@ -106,7 +115,8 @@ class SLAReport
                 $period,
                 json_encode(['sites' => $siteReports, 'totals' => $totals]),
             ]
-        )->lastInsertId();
+        );
+        $reportId = (int)Db::pdo()->lastInsertId();
 
         return [
             'ok' => true,

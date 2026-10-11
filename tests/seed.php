@@ -27,7 +27,7 @@ $uid2 = 777001;
 Db::q('INSERT INTO `user` (`id`,`name`,`username`,`access`,`share_token`,`created_at`,`last_seen`) VALUES (?,?,?,1,?,NOW(),NOW())',
     [$uid2, 'دوست', 'friend', 'usertoken00000000002']);
 
-$mk = static function (array $url, string $label, array $extra = []) use ($uid) {
+$mk = static function (string $url, string $label, array $extra = []) use ($uid) {
     $n = normalizeTarget($url);
     $tok = makeShareToken(20);
     $cols = ['user_id' => $uid, 'chat_id' => 0, 'target' => $n['target'], 'label' => $label,

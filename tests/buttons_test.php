@@ -185,17 +185,60 @@ function crawl(array $rootCbs, array $skipPrefix = [], int $depth = 0): void
     }
 }
 
+/** مثل click() ولی برای دکمهٔ متنیِ کیبورد معمولی (بدون callback_data) */
+function clickText(string $text, string $label): void
+{
+    global $dead, $ADMIN;
+    $errBefore = count($GLOBALS['ERRORS']);
+    act(msgU($ADMIN, $text));
+    $txt = strip_tags(blob());
+    $problems = [];
+    if (count($GLOBALS['ERRORS']) > $errBefore) $problems[] = 'استثنا';
+    if (trim($txt) === '') $problems[] = 'پاسخ خالی';
+    if (has('دستور نامشخص')) $problems[] = 'دستور نامشخص (دکمه وصل نیست)';
+
+    if ($problems) {
+        $dead[] = $text . ' [' . $label . '] → ' . implode('، ', $problems);
+        chk("دکمهٔ متنی «$text» ($label)", false, implode('، ', $problems));
+        Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$ADMIN]);
+        return;
+    }
+
+    $stepAfter = (string)Db::val('SELECT `step` FROM `user` WHERE `id` = ?', [$ADMIN]);
+    if ($stepAfter !== 'idle') {
+        act(msgU($ADMIN, '❌ انصراف'));
+        if ((string)Db::val('SELECT `step` FROM `user` WHERE `id` = ?', [$ADMIN]) !== 'idle') {
+            $dead[] = $text . ' [' . $label . '] → مرحلهٔ ' . $stepAfter . ' بدون راه فرار';
+            chk("دکمهٔ متنی «$text» راه فرار دارد", false, 'در مرحلهٔ ' . $stepAfter . ' گیر کرد');
+            Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$ADMIN]);
+            return;
+        }
+    }
+    chk("دکمهٔ متنی «$text» ($label)", true);
+}
+
 // ==================================================================
 section('۱) پنل مدیریت — تک‌تک دکمه‌ها');
 // ==================================================================
-act(cbU($ADMIN, 'apanel'));
-$panelCbs = cbs();
-chk('پنل مدیریت دکمه دارد', count($panelCbs) > 5, 'تعداد=' . count($panelCbs));
-foreach ($panelCbs as $cb) {
-    // از دکمه‌های پرداخت/کد که داده می‌خواهند فقط باز شدن مرحله مهم است
-    click($cb, 'پنل');
-}
-act(cbU($ADMIN, 'apanel'));
+// پنل ادمین حالا «کیبورد معمولی» است (دکمهٔ متنی، نه شیشه‌ای). پس باید متنِ
+// دکمه‌ها را کلیک کنیم، نه callback_data را.
+$panelTexts = [
+    '🔢 سقف کاربران', '🌐 سقف سایت', '💎 سقف سایت ویژه', '⏱ فاصلهٔ چک',
+    '🚨 آستانهٔ هشدار', '🔓 حالت دسترسی', '🛒 قیمت اشتراک', '💳 شماره کارت',
+    '📆 مدت اشتراک (روز)', '👥 سقف مانیتور گروه', '🔐 هشدار گواهی (روز)',
+    '🌐 هشدار دامنه (روز)', '📇 سقف دامنه', '🔕 اعلان کندی',
+    '🌐 آدرس اپلیکیشن', '🌐 دامنه ربات',
+    '🗣 منشن در گروه', '🎟 کدهای فعال‌سازی', '📊 آمار',
+    '🏦 درگاه‌های پرداخت', '⏰ کرون چک', '📣 همگانی',
+    '💳 پرداخت‌های در انتظار', '🧩 وضعیت افزونه‌ها', '💰 پرداخت همکاران',
+    // دکمه‌های وضعیت‌محور: هر دو حالتِ ممکن را امتحان می‌کنیم
+    '🔕 خاموش کردن اعلان‌ها', '🔔 روشن کردن اعلان‌ها',
+    '⏸ توقف سراسری چک', '▶️ ادامهٔ چک سراسری',
+    '🏠 منو',
+];
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+chk('پنل مدیریت باز شد', has('پنل مدیریت'));
+foreach ($panelTexts as $t) clickText($t, 'پنل');
 
 // ==================================================================
 section('۲) منوی ادمین، آمار، کرون، کدها');

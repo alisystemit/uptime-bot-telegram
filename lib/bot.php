@@ -314,6 +314,22 @@ class Bot
 
         if ($this->addonCommand($cmd, $p)) return;
 
+        // ---- دکمه‌های پنل مدیریت (کیبورد معمولی) ----
+        // همان اکشن‌هایی که قبلاً callback_data داشتند، بدون تکرار منطق:
+        // یک آپدیتِ مصنوعی می‌سازیم و به onCallback می‌دهیم. چون message_id
+        // صفر است، edit() خودش send() می‌کند و کاربر یک پیام تازه می‌بیند.
+        $panelAct = $this->adminPanelAction($cmd);
+        if ($panelAct !== null) {
+            if (!$this->isAdmin()) { $this->unknown(); return; }
+            $this->onCallback([
+                'id'     => '',
+                'from'   => ['id' => $this->uid],
+                'message' => ['message_id' => 0, 'chat' => ['id' => $this->chatId, 'type' => 'private'], 'text' => $cmd],
+                'data'   => $panelAct,
+            ]);
+            return;
+        }
+
         switch ($text) {
             case '➕ افزودن سایت':
                 $this->startAddSite();
@@ -2481,25 +2497,81 @@ class Bot
 
     private function adminPanelMenu(): string
     {
-        return BotApi::ikb([
-            [['text' => '🔢 سقف کاربران', 'callback_data' => 'set:max_users'], ['text' => '🌐 سقف سایت', 'callback_data' => 'set:max_sites']],
-            [['text' => '💎 سقف سایت ویژه', 'callback_data' => 'set:vip_max_sites'], ['text' => '⏱ فاصلهٔ چک', 'callback_data' => 'set:check_interval']],
-            [['text' => '🚨 آستانهٔ هشدار', 'callback_data' => 'set:fail_threshold'], ['text' => '🔓 حالت دسترسی', 'callback_data' => 'set:access_mode']],
-            [['text' => '🛒 قیمت اشتراک', 'callback_data' => 'set:price'], ['text' => '💳 شماره کارت', 'callback_data' => 'set:card']],
-            [['text' => '📆 مدت اشتراک (روز)', 'callback_data' => 'set:vip_days'], ['text' => '👥 سقف مانیتور گروه', 'callback_data' => 'set:group_max_sites']],
-            [['text' => '🔐 هشدار گواهی (روز)', 'callback_data' => 'set:ssl_warn_days'], ['text' => '🌐 هشدار دامنه (روز)', 'callback_data' => 'set:domain_warn_days']],
-            [['text' => '📇 سقف دامنه', 'callback_data' => 'set:max_domains'], ['text' => '🔕 اعلان کندی', 'callback_data' => 'set:notify_slow']],
-            [['text' => '🌐 آدرس اپلیکیشن (base_url)', 'callback_data' => 'set:base_url'], ['text' => '🌐 دامنه ربات', 'callback_data' => 'set:domain']],
-            [['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها', 'callback_data' => 'set:notify'],
-             ['text' => '🗣 منشن در گروه', 'callback_data' => 'set:group_mention']],
-            [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک', 'callback_data' => Db::getBool('pause_all', false) ? 'resume' : 'pause']],
-            [['text' => '🎟 کدهای فعال‌سازی', 'callback_data' => 'codes'], ['text' => '📊 آمار', 'callback_data' => 'astats']],
-            [['text' => '🏦 درگاه‌های پرداخت', 'callback_data' => 'pgws_list'], ['text' => '⏰ کرون چک', 'callback_data' => 'cron']],
-            [['text' => '📣 همگانی', 'callback_data' => 'abroadcast'], ['text' => '💳 پرداخت‌های در انتظار', 'callback_data' => 'apays']],
-            [['text' => '🧩 وضعیت افزونه‌ها', 'callback_data' => 'sysstat'], ['text' => '💰 پرداخت همکاران', 'callback_data' => 'apayouts']],
-            [['text' => '🔙 بازگشت', 'callback_data' => 'menu']],
-        ]);
+        return BotApi::kb(self::adminPanelRows());
     }
+
+    /**
+     * سطرهای پنل مدیریت به‌صورت «کیبورد معمولی» (reply keyboard).
+     *
+     * چرا reply و نه inline؟ دکمه‌های شیشه‌ای (inline) روی بعضی کلاینت‌ها یا
+     * وقتی پیام قدیمی شده بد رفتار می‌کنند و کاربر چیزی نمی‌بیند. با کیبورد
+     * معمولی، دکمه یک متنِ واقعی است که handleCommand آن را می‌فهمد.
+     *
+     * @return array<int,array<int,array{text:string}>>
+     */
+    private static function adminPanelRows(): array
+    {
+        return [
+            [['text' => '🔢 سقف کاربران'], ['text' => '🌐 سقف سایت']],
+            [['text' => '💎 سقف سایت ویژه'], ['text' => '⏱ فاصلهٔ چک']],
+            [['text' => '🚨 آستانهٔ هشدار'], ['text' => '🔓 حالت دسترسی']],
+            [['text' => '🛒 قیمت اشتراک'], ['text' => '💳 شماره کارت']],
+            [['text' => '📆 مدت اشتراک (روز)'], ['text' => '👥 سقف مانیتور گروه']],
+            [['text' => '🔐 هشدار گواهی (روز)'], ['text' => '🌐 هشدار دامنه (روز)']],
+            [['text' => '📇 سقف دامنه'], ['text' => '🔕 اعلان کندی']],
+            [['text' => '🌐 آدرس اپلیکیشن'], ['text' => '🌐 دامنه ربات']],
+            [['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها'], ['text' => '🗣 منشن در گروه']],
+            [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک']],
+            [['text' => '🎟 کدهای فعال‌سازی'], ['text' => '📊 آمار']],
+            [['text' => '🏦 درگاه‌های پرداخت'], ['text' => '⏰ کرون چک']],
+            [['text' => '📣 همگانی'], ['text' => '💳 پرداخت‌های در انتظار']],
+            [['text' => '🧩 وضعیت افزونه‌ها'], ['text' => '💰 پرداخت همکاران']],
+            [['text' => '🏠 منو']],
+        ];
+    }
+
+    /**
+     * نگاشت متنِ دکمه‌های پنل مدیریت به همان اکشن‌هایی که قبلاً callback_data
+     * بودند — تا منطق موجود بدون تکرار استفاده شود.
+     *
+     * @return string|null اکشن، یا null اگر متن، دکمهٔ پنل نبود
+     */
+    private function adminPanelAction(string $text): ?string
+    {
+        static $map = [
+            '🔢 سقف کاربران'          => 'set:max_users',
+            '🌐 سقف سایت'             => 'set:max_sites',
+            '💎 سقف سایت ویژه'        => 'set:vip_max_sites',
+            '⏱ فاصلهٔ چک'             => 'set:check_interval',
+            '🚨 آستانهٔ هشدار'         => 'set:fail_threshold',
+            '🔓 حالت دسترسی'          => 'set:access_mode',
+            '🛒 قیمت اشتراک'          => 'set:price',
+            '💳 شماره کارت'           => 'set:card',
+            '📆 مدت اشتراک (روز)'     => 'set:vip_days',
+            '👥 سقف مانیتور گروه'     => 'set:group_max_sites',
+            '🔐 هشدار گواهی (روز)'     => 'set:ssl_warn_days',
+            '🌐 هشدار دامنه (روز)'     => 'set:domain_warn_days',
+            '📇 سقف دامنه'            => 'set:max_domains',
+            '🔕 اعلان کندی'            => 'set:notify_slow',
+            '🌐 آدرس اپلیکیشن'        => 'set:base_url',
+            '🌐 دامنه ربات'           => 'set:domain',
+            '🔕 خاموش کردن اعلان‌ها'   => 'set:notify',
+            '🔔 روشن کردن اعلان‌ها'    => 'set:notify',
+            '🗣 منشن در گروه'         => 'set:group_mention',
+            '⏸ توقف سراسری چک'        => 'pause',
+            '▶️ ادامهٔ چک سراسری'      => 'resume',
+            '🎟 کدهای فعال‌سازی'      => 'codes',
+            '📊 آمار'                 => 'astats',
+            '🏦 درگاه‌های پرداخت'      => 'pgws_list',
+            '⏰ کرون چک'              => 'cron',
+            '📣 همگانی'               => 'abroadcast',
+            '💳 پرداخت‌های در انتظار'  => 'apays',
+            '🧩 وضعیت افزونه‌ها'       => 'sysstat',
+            '💰 پرداخت همکاران'       => 'apayouts',
+        ];
+        return $map[$text] ?? null;
+    }
+
 
     private function sitesListMenu(): string
     {

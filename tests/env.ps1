@@ -30,6 +30,9 @@ if (-not (Test-Path $cfg)) { throw "test config not found: $cfg" }
 # Child processes must inherit these BEFORE Start-Process is called.
 $env:UPTIME_CONFIG = $cfg
 $env:UPTIME_DEBUG  = '1'
+# Lets tests/error_webhook_test.php deliberately crash the bot, to verify the
+# error report works over the real webhook (200 not 500).
+$env:UPTIME_TEST_CRASH = '1'
 
 function Wait-Port([int]$port, [int]$sec = 30) {
     for ($i = 0; $i -lt $sec; $i++) {
@@ -69,7 +72,7 @@ Write-Host 'schema installed'
 # --- 4) tests ----------------------------------------------------------------
 if ($Run) {
     $fail = 0
-    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'nav_test.php', 'test_fixes.php', 'e2e_journey.php', 'adversary_test.php', 'homoglyph_test.php', 'buttons_test.php', 'fuzz.php', 'fuzz_http.php')) {
+    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'nav_test.php', 'test_fixes.php', 'e2e_journey.php', 'adversary_test.php', 'homoglyph_test.php', 'error_report_test.php', 'error_webhook_test.php', 'buttons_test.php', 'fuzz.php', 'fuzz_http.php')) {
         $f = Join-Path $PSScriptRoot $t
         if (-not (Test-Path $f)) { continue }
         Write-Host ''

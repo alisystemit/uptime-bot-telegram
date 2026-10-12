@@ -31,6 +31,7 @@ if (!defined('UPTIME_ROOT')) {
     require_once __DIR__ . '/groupbot.php';
     require_once __DIR__ . '/paybot.php';
     require_once __DIR__ . '/addons.php';          // افزونه‌ها (class Addons + trait AddonsUi)
+    require_once __DIR__ . '/errors.php';          // گزارش خطای داخلی (class ErrorReport)
     require_once __DIR__ . '/bot.php';
     
     // ===== ماژول‌های جدید =====
@@ -208,4 +209,40 @@ function uptimeLog(string $level, string $msg): void
     if (!is_dir($dir)) @mkdir($dir, 0755, true);
     $line = sprintf("[%s] [%s] %s\n", date('Y-m-d H:i:s'), strtoupper($level), $msg);
     @file_put_contents($dir . '/' . date('Y-m-d') . '.log', $line, FILE_APPEND | LOCK_EX);
+}
+
+/** جداکنندهٔ بصری برای پیام‌های چندبخشی */
+function tgSep(): string
+{
+    return '━━━━━━━━━━━━━━━━━━━━━━';
+}
+
+/**
+ * پاک‌سازی پیام خطای دیتابیس.
+ *
+ * پیامِ PDOException معمولاً کل کوئریِ شامل نام جدول‌ها، نام کاربرِ دیتابیس و
+ * حتی بخشی از رمز را لو می‌دهد. این‌ها نباید به کاربرِ عادی برسد؛ برای ادمین
+ * هم بهتر است خلاصه و قابل‌خواندن باشد. جزئیات کامل در لاگ می‌ماند.
+ */
+function sanitizeDbError(string $msg): string
+{
+    // رشته‌های اتصال (user:pass@host) ⇒ فقط نوع خطا
+    if (preg_match('/SQLSTATE\[(\w+)\]/', $msg, $m)) {
+        $code = $m[1];
+        $head = match ($code) {
+            '42S02', '42S22', '42S21', '23000' => 'ساختار دیتابیس ناسازگار است',
+            'HY000'  => 'خطای عمومی دیتابیس',
+            '28000'  => 'دسترسی دیتابیس رد شد',
+            default => 'خطای دیتابیس',
+        };
+        // نام جدول/ستون برای ادمین مفید است، اما نه کوئری و نه رمز
+        if (preg_match('/(?:Table|table) [\'"]?([\w]+)[\'"]?/', $msg, $t)) {
+            return $head . ' — جدول/ستون: ' . $t[1];
+        }
+        return $head . ' (' . $code . ')';
+    }
+    // کوئری‌ها و رمزها را حذف کن
+    $msg = preg_replace('/(password|passwd|pwd)\s*=\s*\S+/i', '$1=***', $msg) ?? $msg;
+    $msg = preg_replace('/\bSELECT\b.*$/is', 'SQL', $msg) ?? $msg;
+    return mb_substr($msg, 0, 200);
 }

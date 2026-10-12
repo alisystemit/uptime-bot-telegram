@@ -6,7 +6,12 @@
  * با secret_token ارسال می‌کند (فرمول: sha256(token . '_uptime_webhook_secret')).
  * برای تست دستی، پارامتر ?secret= هم پذیرفته می‌شود.
  */
+// display_errors خاموش: پاسخِ وب‌هوک باید JSON خالص باشد. اگر PHP خطا را
+// داخل بدنه چاپ کند، تلگرام یک HTML به‌جای JSON می‌گیرد و کل به‌روزرسانی
+// بی‌اثر می‌شود. خطاها از راه لاگ گزارش می‌شوند، نه از راه صفحه.
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
+ini_set('display_errors', '0');
+ini_set('log_errors', '1');
 header('Content-Type: application/json; charset=utf-8');
 
 require_once __DIR__ . '/lib/bootstrap.php';
@@ -53,17 +58,38 @@ if ($updateId !== null) {
 
 // ---------- 5) پردازش ----------
 try {
+    // نقطهٔ آزمونِ عمدی: فقط وقتی متغیر محیطیِ تست روشن باشد و متنِ پیام این
+    // نشانه را داشته باشد. در محیط واقعی هرگز فعال نمی‌شود.
+    if (getenv('UPTIME_TEST_CRASH') === '1'
+        && str_starts_with((string)($update['message']['text'] ?? ''), "\x00CRASH_TEST\x00")) {
+        // خطایی در مسیر dispatch (نه در گزارش): لایهٔ ایمنیِ Bot باید آن را بگیرد
+        throw new RuntimeException('خطای آزمایشی از مسیر dispatch');
+    }
+
     $bot = new Bot($cfg);
     $bot->handle($update);
 } catch (Throwable $e) {
+    // شبکهٔ ایمنی: Bot::handle خودش خطا را به کاربر گزارش می‌کند و برمی‌گردد،
+    // پس رسیدن به این‌جا یعنی خودِ آن لایه هم شکست خده است.
     uptimeLog('error', 'handle failed: ' . $e->getMessage() . ' @ ' . $e->getFile() . ':' . $e->getLine());
-    // 500 ⇒ تلگرام همان آپدیت را دوباره می‌فرستد
-    http_response_code(500);
-    echo json_encode(['ok' => false, 'error' => 'processing']);
-    exit;
+    try {
+        ErrorReport::handlerError(
+            'index.php',
+            (string)($update['message']['text'] ?? $update['callback_query']['data'] ?? ''),
+            $e,
+            (int)($update['message']['from']['id'] ?? $update['callback_query']['from']['id'] ?? 0) ?: null
+        );
+    } catch (Throwable $ignored) {
+        // حتی گزارش هم شکست خورد ⇒ فقط لاگ خام
+    }
 }
 
-// ---------- 6) علامت‌گذاری فقط پس از موفقیت ----------
+// ---------- 6) علامت‌گذاری (حتی بعد از خطا) ----------
+// نکتهٔ کلیدی: علامت‌گذاری «همیشه» انجام می‌شود، نه فقط بعد از موفقیت.
+// دلیل: کاربر پیامِ خطا را گرفته و می‌داند چه شد؛ اگر اینجا علامت نخورد،
+// تلگرام همان آپدیت را بی‌نهایت دوباره می‌فرستد و کاربر پیامِ خطای تکراری
+// می‌بیند (حلقهٔ آزاردهنده) و سرور هم زیر بار می‌رود.
+// خطاهای گذرا (مشکل شبکهٔ دیتابیس) با دستور /reset قابل تکرارند.
 if ($updateId !== null) {
     try {
         Db::q('INSERT IGNORE INTO `seen_update` (`update_id`,`ts`) VALUES (?,NOW())', [$updateId]);

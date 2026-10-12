@@ -33,7 +33,81 @@ class Bot
 
     // ================================================================ ورودی
 
+    /**
+     * نقطهٔ ورودِ هر آپدیت.
+     *
+     * کل این متد در یک لایهٔ ایمنی پیچیده شده: اگر هر بخشی استثنا بدهد،
+     * کاربر یک پیامِ دقیق و خوانا می‌گیرد (بخش + ورودی + علت + فایل:خط)
+     * به‌جای سکوتِ آزاردهنده، و استثنا **بیرون نمی‌رود** تا وب‌هوک ۵۰۰ ندهد
+     * و تلگرام همان آپدیت را بی‌نهایت تکرار نکند.
+     */
     public function handle(array $update): void
+    {
+        try {
+            $this->dispatch($update);
+        } catch (Throwable $e) {
+            $this->reportCrash($e, $update);
+        }
+    }
+
+    /**
+     * گزارش خطا با آگاهی از اینکه دقیقاً کدام بخش و کدام ورودی خراب بود.
+     * اگر chat id و منوی اصلی در دسترس نبودند (مثلاً خطا قبل از شناسایی
+     * کاربر)، فقط لاگ می‌شود و پیامی فرستاده نمی‌شود — چون بی‌مقصد فرستادن
+     * پیام خودش خطای دوم می‌سازد.
+     */
+    private function reportCrash(Throwable $e, array $update): void
+    {
+        $cb = (array)($update['callback_query'] ?? []);
+        $msg = (array)($update['message'] ?? $update['channel_post'] ?? []);
+        $from = (array)($cb['from'] ?? $msg['from'] ?? []);
+        $uid = (int)($from['id'] ?? 0);
+
+        if (!empty($update['callback_query'])) {
+            $stage = 'callback: ' . (string)($cb['data'] ?? '?');
+            $input = (string)($cb['data'] ?? '');
+        } elseif (!empty($update['channel_post'])) {
+            $stage = 'channel_post';
+            $input = (string)($msg['text'] ?? '[غیرمتنی]');
+        } elseif (!empty($update['message'])) {
+            $stage = 'message';
+            $input = (string)($msg['text'] ?? '[غیرمتنی]');
+        } else {
+            $stage = 'update: ' . implode('+', array_keys($update));
+            $input = '';
+        }
+
+        try {
+            // کیبوردِ «راه فرار» در پیامِ خطا تا کاربر بعد از خطا گم نشود.
+            // mainMenu() خودش JSON کیبورد برمی‌گرداند (شامل «❌ انصراف» و
+            // دکمه‌های اصلی)؛ کافی است سطرِ «🏠 منو» را هم به آن اضافه کنیم.
+            $kb = null;
+            if ($uid > 0) {
+                $this->uid = $uid;
+                $this->chatId = (int)($msg['chat']['id'] ?? $cb['message']['chat']['id'] ?? $uid);
+                if ($this->loadUserForMenu($uid) !== null) {
+                    $decoded = json_decode($this->mainMenu(), true);
+                    if (is_array($decoded) && isset($decoded['keyboard']) && is_array($decoded['keyboard'])) {
+                        $decoded['keyboard'][] = [['text' => '🏠 منو']];
+                        $kb = json_encode($decoded, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    }
+                }
+            }
+            ErrorReport::handlerError($stage, $input, $e, $uid > 0 ? $uid : null, $kb);
+        } catch (Throwable $ignored) {
+            // حتی مسیرِ گزارش هم شکست خورد ⇒ فقط لاگ خام
+            try { uptimeLog('error', '[handler] report path failed: ' . $e->getMessage()); } catch (Throwable $x) {}
+        }
+    }
+
+    /**
+     * بدنهٔ واقعیِ dispatch (بدون لایهٔ ایمنی).
+     *
+     * `protected` است نه `private` تا تست بتواند یک زیرکلاسِ خراب بسازد و
+     * ثابت کند که handle() استثنا را مهار می‌کند — بدون اینکه لازم باشد
+     * جدول یا تنظیم واقعی را خراب کند.
+     */
+    protected function dispatch(array $update): void
     {
         if (!empty($update['callback_query'])) {
             $this->onCallback($update['callback_query']);
@@ -69,6 +143,26 @@ class Bot
     }
 
     // ================================================================ کاربر
+
+    /**
+     * خواندنِ ساده و «بدون‌خطر» کاربر فقط برای ساخت منویِ دکمهٔ «🏠 منو»
+     * در پیامِ خطا.
+     *
+     * چرا متد جدا و نه ensureUser؟ ensureUser می‌تواند کاربر تازه ثبت کند یا
+     * به‌خاطر سقف ظرفیت null برگرداند؛ هیچ‌کدام در مسیرِ گزارش خطا لازم نیست
+     * و هر دو ممکن است خودشان خطای تازه بسازند. اینجا فقط خوانده می‌شود.
+     */
+    private function loadUserForMenu(int $uid): ?array
+    {
+        try {
+            $row = Db::one('SELECT * FROM `user` WHERE `id` = ?', [$uid]);
+            if (!is_array($row)) return null;
+            $this->u = $row;
+            return $row;
+        } catch (Throwable $ignored) {
+            return null;   // دیتابیس هم خراب است ⇒ فقط پیام خطا، بدون منو
+        }
+    }
 
     private function ensureUser(array $from): ?array
     {

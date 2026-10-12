@@ -72,7 +72,7 @@ Write-Host 'schema installed'
 # --- 4) tests ----------------------------------------------------------------
 if ($Run) {
     $fail = 0
-    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'nav_test.php', 'test_fixes.php', 'e2e_journey.php', 'adversary_test.php', 'homoglyph_test.php', 'error_report_test.php', 'error_webhook_test.php', 'buttons_test.php', 'fuzz.php', 'fuzz_http.php')) {
+    foreach ($t in @('pay_test.php', 'integration.php', 'ranking_test.php', 'nav_test.php', 'test_fixes.php', 'e2e_journey.php', 'adversary_test.php', 'homoglyph_test.php', 'error_report_test.php', 'error_webhook_test.php', 'app_button_test.php', 'buttons_test.php', 'fuzz.php', 'fuzz_http.php')) {
         $f = Join-Path $PSScriptRoot $t
         if (-not (Test-Path $f)) { continue }
         Write-Host ''

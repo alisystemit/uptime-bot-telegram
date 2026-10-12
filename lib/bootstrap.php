@@ -59,6 +59,55 @@ function appConfig(): array
     return $cfg;
 }
 
+/**
+ * نرمال‌سازی آدرس پایه: scheme + بدون اسلش انتهایی.
+ * ورودی خام کاربر ممکن است «example.com/x» یا «https://example.com/x/» باشد.
+ */
+function normalizeBaseUrl(string $raw): string
+{
+    $u = trim($raw);
+    if ($u === '') return '';
+    if (!preg_match('#^https?://#i', $u)) $u = 'https://' . $u;
+    $u = rtrim($u, '/');
+    $hostpart = preg_replace('#^https?://#i', '', $u) ?? '';
+    if (trim($hostpart) === '') return '';
+    return $u;
+}
+
+/**
+ * آدرس پایهٔ مؤثر — «اولویت با تنظیم پنل مدیریت، بعد کانفیگ».
+ *
+ * چرا این تابع؟ قبلاً miniAppUrl()/statusUrl()/siteUrl() فقط config.php را
+ * می‌خواندند، پس تغییر «آدرس اپلیکیشن» یا «دامنهٔ ربات» از پنل مدیریت هیچ
+ * اثری نداشت (کاربر پیام «ذخیره شد» می‌گرفت ولی لینک‌ها همان قدیمی می‌ماندند).
+ * حالا هرچه در جدول settings (set:base_url / set:domain) ذخیره شده بر
+ * config.php مقدم است.
+ */
+function effectiveBaseUrl(): string
+{
+    $cfg = appConfig();
+    $dbUrl = '';
+    $dbDomain = '';
+    try {
+        $dbUrl = (string)(Db::get('base_url') ?? '');
+        $dbDomain = (string)(Db::get('domain') ?? '');
+    } catch (Throwable $e) {
+        // اگر دیتابیس در دسترس نبود، به config.php بسنده می‌کنیم
+    }
+    $cfgDomain = trim((string)($cfg['domain'] ?? ''));
+    $candidates = [
+        $dbUrl,
+        $dbDomain !== '' ? 'https://' . $dbDomain : '',
+        (string)($cfg['base_url'] ?? ''),
+        $cfgDomain !== '' ? 'https://' . $cfgDomain : '',
+    ];
+    foreach ($candidates as $c) {
+        $n = normalizeBaseUrl($c);
+        if ($n !== '') return $n;
+    }
+    return '';
+}
+
 /** آماده‌سازی دیتابیس + جدول‌ها */
 function appBoot(bool $migrate = true): array
 {
@@ -78,69 +127,29 @@ function botUsername(): string
     return trim((string)(appConfig()['bot_username'] ?? ''), '@');
 }
 
-/** URL اپلیکیشن تلگرام (Mini App) — 自動	rotection از سرور */
+/**
+ * URL اپلیکیشن تلگرام (Mini App).
+ *
+ * منبعِ واحد: effectiveBaseUrl() که اولویت را به تنظیم پنل مدیریت
+ * (جدول settings) می‌دهد و بعد سراغ config.php می‌رود.
+ * قبلاً پنج «قدم» با ترتیب اشتباه بود: config.php قبل از دیتابیس خوانده
+ * می‌شد، برای همین تغییر «آدرس اپلیکیشن» از پنل هیچ اثری نداشت.
+ */
 function miniAppUrl(): string
 {
-    $cfg = appConfig();
-    
-    // ==========================================
-    // قدم اول: تلاش از reconfigure config.php
-    // ==========================================
-    $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
-    if ($base && $base !== '{BASE_URL}' && $base !== 'https://') {
-        // config.php مقدار واقعی دارد → مستقیماً استفاده
-        if ($base !== '') return $base . '/webapp/index.html';
+    $base = effectiveBaseUrl();
+    if ($base !== '') return $base . '/webapp/index.html';
+
+    // آخرین تلاش: حدس از روی خودِ درخواست (وقتی نه config و نه دیتابیس چیزی ندارند)
+    $host = (string)($_SERVER['SERVER_NAME'] ?? '');
+    if ($host !== '') {
+        $port = (string)($_SERVER['SERVER_PORT'] ?? '');
+        if ($port !== '' && $port !== '80' && $port !== '443') $host .= ':' . $port;
+        // تلگرام برای WebApp فقط https را قبول می‌کند
+        $guess = normalizeBaseUrl('https://' . $host);
+        if ($guess !== '') return $guess . '/webapp/index.html';
     }
-    
-    // ==========================================
-    // قدم دوم: خودکارDetection از $_SERVER
-    // اینکار بدون هیچ تنظیمات Admin انجام می‌شود
-    // ==========================================
-    $serverName = $_SERVER['SERVER_NAME'] ?? '';
-    $serverPort = $_SERVER['SERVER_PORT'] ?? '';
-    $requestScheme = $_SERVER['REQUEST_SCHEME'] ?? 'http';
-    
-    if ($serverName) {
-        $host = $serverName;
-        // پورت پیش‌فرض اضافه کن (اگر غیراز ۸۰/۴۴۳ باشد)
-        if ($serverPort && $serverPort != '80' && $serverPort != '443') {
-            $host .= ':'.$serverPort;
-        }
-        // اطمینان از استفاده از https (Telegram WebApp نیاز دارد)
-        $scheme = ($requestScheme === 'https' || $serverPort === '443') ? 'https' : 'https';
-        $base = $scheme . '://' . $host;
-        if ($base !== '') return $base . '/webapp/index.html';
-    }
-    
-    // ==========================================
-    // قدم سوم: از دیتابیس (اگر admin قبلاً تنظیم کرده باشد)
-    // ==========================================
-    $base = rtrim((string)(Db::get('base_url') ?? ''), '/');
-    if ($base && $base !== 'https://') {
-        if ($base !== '') return $base . '/webapp/index.html';
-    }
-    
-    // ==========================================
-    // قدم چهارم: از domain در config.php
-    // ==========================================
-    $domain = trim((string)($cfg['domain'] ?? ''));
-    if ($domain && $domain !== '{DOMAIN.COM/PATH/BOT}') {
-        $base = 'https://' . $domain;
-        if ($base !== 'https://' && $base !== '') return $base . '/webapp/index.html';
-    }
-    
-    // ==========================================
-    // قدم پنجم: از domain در دیتابیس
-    // ==========================================
-    $domain = trim((string)(Db::get('domain') ?? ''));
-    if ($domain) {
-        $base = 'https://' . $domain;
-        if ($base !== 'https://' && $base !== '') return $base . '/webapp/index.html';
-    }
-    
-    // ==========================================
-    // Fuß: هیچfind نشد → دکمه مخفی می‌ماند (امن)
-    // ==========================================
+
     return '';
 }
 

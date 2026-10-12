@@ -282,8 +282,13 @@ function historyBarAscii(array $history): string
 /** URL صفحهٔ وضعیت عمومی یک کاربر */
 function statusUrl(array $cfg, string $shareToken): string
 {
-    $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
-    if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+    // effectiveBaseUrl() اولویت را به تنظیم پنل مدیریت می‌دهد، بعد config.php
+    $base = function_exists('effectiveBaseUrl') ? effectiveBaseUrl() : '';
+    if ($base === '') {
+        $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
+        if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+    }
+    if ($base === '') return '';
     return $base . '/status.php?u=' . rawurlencode($shareToken);
 }
 

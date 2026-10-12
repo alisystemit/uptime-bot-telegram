@@ -422,6 +422,17 @@ class Bot
             return true;
         }
 
+        // ---- دکمهٔ منو و دستورها همیشه «ناوبری»‌اند، نه «ورودیِ مرحله» ----
+        // بدون این، کاربرِ وسطِ یک مرحله با زدن «⚙️ تنظیمات» یا «🛒 اشتراک ویژه»
+        // به یک handlerِ بی‌ربط می‌افتاد و پیام‌های گمراه‌کننده می‌گرفت.
+        // استثنا: «پیام همگانی» چون متنِ آن محتوای دلخواهِ مدیر است و ممکن است
+        // واقعاً با «⚙️ …» یا «/…» شروع شود.
+        if ($step !== 'await_broadcast' && (Nav::isMenuButton($text) || Nav::isCommand($text))) {
+            $this->clearStep();
+            $this->handleCommand($text, $msg);
+            return true;
+        }
+
         if ($this->addonStep($text, $msg, $step)) return true;
 
         switch ($step) {
@@ -805,8 +816,13 @@ class Bot
 
     private function siteUrl(string $token): string
     {
-        $base = rtrim((string)($this->cfg['base_url'] ?? ''), '/');
-        if ($base === '') $base = 'https://' . trim((string)($this->cfg['domain'] ?? ''));
+        // اولویت با تنظیم پنل مدیریت (base_url/domain در جدول settings)
+        $base = effectiveBaseUrl();
+        if ($base === '') {
+            $base = rtrim((string)($this->cfg['base_url'] ?? ''), '/');
+            if ($base === '') $base = 'https://' . trim((string)($this->cfg['domain'] ?? ''));
+        }
+        if ($base === '') return '';
         return $base . '/status.php?s=' . rawurlencode($token);
     }
 
@@ -1125,15 +1141,32 @@ class Bot
             return;
         }
         if ($key === 'base_url') {
-            Db::set('base_url', trim($text));
+            $u = normalizeBaseUrl(faToLatin($text));
+            if ($u === '' || !preg_match('#^https?://([a-z0-9.-]+\.[a-z]{2,})(:\d+)?(/.*)?$#i', $u)) {
+                $this->send("⛔️ آدرس معتبر نیست.\n\nمثال درست:\n<code>https://example.com</code>\n"
+                    . "<code>https://example.com/bots/mybot</code>", Nav::cancelKb());
+                return;
+            }
+            Db::set('base_url', $u);
             $this->clearStep();
-            $this->send("✅ آدرس پایه اپلیکیشن ذخیره شد:\n<code>" . tgH(Db::get('base_url', '')) . "</code>", $this->adminPanelMenu());
+            $this->send("✅ آدرس پایه ذخیره شد:\n<code>" . tgH($u) . "</code>\n\n"
+                . "از این لحظه لینک‌های صفحهٔ وضعیت، اپلیکیشن و کرون از همین آدرس ساخته می‌شوند.\n"
+                . "🔗 نمونه: <code>" . tgH($u . '/webapp/index.html') . "</code>", $this->adminPanelMenu());
             return;
         }
         if ($key === 'domain') {
-            Db::set('domain', trim($text));
+            // دامنه: بدون scheme و بدون اسلش انتهایی (مثل config.php)
+            $d = trim(faToLatin($text));
+            $d = preg_replace('#^https?://#i', '', $d) ?? $d;
+            $d = trim($d, "/ \t\n\r");
+            if ($d === '' || !preg_match('#^([a-z0-9.-]+\.[a-z]{2,})(:\d+)?(/.*)?$#i', $d)) {
+                $this->send("⛔️ دامنه معتبر نیست.\n\nمثال درست:\n<code>example.com</code>\n"
+                    . "<code>example.com/bots/mybot</code>\n\n(بدون <code>https://</code>)", Nav::cancelKb());
+                return;
+            }
+            Db::set('domain', $d);
             $this->clearStep();
-            $this->send("✅ دامنه ربات ذخیره شد:\n<code>" . tgH(Db::get('domain', '')) . "</code>", $this->adminPanelMenu());
+            $this->send("✅ دامنهٔ ربات ذخیره شد:\n<code>" . tgH($d) . "</code>", $this->adminPanelMenu());
             return;
         }
         $rules = [
@@ -2343,8 +2376,16 @@ class Bot
             . "▫️ سقف دامنه: " . ($maxDomains > 0 ? faNum($maxDomains) : 'نامحدود') . "\n"
             . "▫️ سقف مانیتور گروه: " . faNum((int)($s['group_max_sites'] ?? 10)) . " • منشن: " . $mentionTxt . "\n"
             . ($hubTxt !== '' ? "▫️ گروه/کانال‌های متصل: " . trim($hubTxt) . "\n" : '')
-            . "▫️ موتور چک: " . ($e['paused'] ? '⏸ <b>متوقف</b>' : '🟢 فعال')
-            . ($e['last_round'] ? " • آخرین راند: " . timeAgo($e['last_round'], tzOffset()) : '');
+            . "▫️ موتور چک: " . ($e['paused'] ? '⏸ <b>متوقف</b>'
+                : (!empty($e['cron_healthy']) ? '🟢 فعال' : '🟡 <b>کرون راه‌اندازی نشده</b>'))
+            . ($e['last_round'] ? " • آخرین راند: " . timeAgo($e['last_round'], tzOffset()) : '')
+            . "\n\n<b>🔗 آدرس‌های فعال</b>\n"
+            . "▫️ آدرس پایه: <code>" . tgH(effectiveBaseUrl() ?: '— تنظیم نشده —') . "</code>\n"
+            . "▫️ اپلیکیشن: <code>" . tgH(miniAppUrl() ?: '—') . "</code>\n"
+            . "▫️ صفحهٔ وضعیت: <code>" . tgH((function () {
+                $b = effectiveBaseUrl();
+                return $b !== '' ? $b . '/status.php?u=&lt;توکن&gt;' : '—';
+            })()) . "</code>";
     }
 
     private function cronText(): string

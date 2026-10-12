@@ -364,7 +364,84 @@ act(cbU($ADMIN, 'apayok:' . $payZ['id']));
 chk('تأیید پرداخت کاربرِ حذف‌شده بی‌خطر بود', empty($GLOBALS['ERRORS']));
 
 // ==================================================================
-section('۵) نتیجهٔ نهایی');
+section('۵) ناوبری: دکمهٔ منو وسطِ مرحلهٔ نیمه‌کاره');
+// ==================================================================
+// رگرسیونِ گزارش‌شده: کاربر/ادمین وسط یک مرحله دکمهٔ منو را می‌زد و به‌جای
+// رفتن به آن صفحه، متن دکمه به handlerِ بی‌ربط می‌رفت (مثلاً «لطفاً یک عدد وارد
+// کنید» برای کسی که اصلاً در تنظیمات نبود).
+act(msgU($VEX, '/start'));
+
+// نامزدهایی که قبلاً در مرحلهٔ await_setting گیر می‌کردند.
+// برای «➕ افزودن سایت» انتظارمان متفاوت است: درست ناوبری می‌کند و یک مرحلهٔ
+// تازه (await_site) باز می‌کند — که خودش درست بودنِ ناوبری را ثابت می‌کند.
+$navCases = [
+    ['🛒 اشتراک ویژه', 'اشتراک', 'idle'],
+    ['⚙️ تنظیمات', 'تنظیمات', 'idle'],
+    ['📋 سایت‌های من', 'سایت', 'idle'],
+    ['📈 گزارش من', 'گزارش', 'idle'],
+    ['➕ افزودن سایت', 'آدرس سایت', 'await_site'],
+    ['👥 مانیتورهای مشترک', 'مانیتور', 'idle'],
+];
+foreach ($navCases as [$btn, $needle, $expectStep]) {
+    // مرحلهٔ نیمه‌کاره: کاربر دارد قیمت را تنظیم می‌کند.
+    Db::q("UPDATE `user` SET `step` = 'await_setting', `temp` = ? WHERE `id` = ?",
+        [json_encode(['key' => 'price']), $VEX]);
+    act(msgU($VEX, $btn));
+    $st = (string)Db::val('SELECT `step` FROM `user` WHERE `id` = ?', [$VEX]);
+    chk("دکمهٔ «$btn» وسطِ مرحله ناوبری کرد (نه ورودیِ مرحله)",
+        $st === $expectStep && !has('یک عدد وارد کنید'),
+        'step=' . $st . ' (انتظار ' . $expectStep . ') | ' . mb_substr(strip_tags(blob()), 0, 60));
+    // برگردان به حالت تمیز برای دور بعد
+    Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$VEX]);
+}
+
+// دستورها هم وسطِ مرحله باید کار کنند
+foreach (['/help', '/sites', '/report'] as $cmd) {
+    Db::q("UPDATE `user` SET `step` = 'await_setting', `temp` = ? WHERE `id` = ?",
+        [json_encode(['key' => 'price']), $VEX]);
+    act(msgU($VEX, $cmd));
+    chk("دستور `$cmd` وسطِ مرحله اجرا شد",
+        (string)Db::val('SELECT `step` FROM `user` WHERE `id` = ?', [$VEX]) === 'idle'
+        && !has('یک عدد وارد کنید'));
+}
+
+// مرحلهٔ واقعی هم نباید بشکند: بعد از ناوبری، جریان عادی کار کند
+act(msgU($VEX, '➕ افزودن سایت'));
+chk('مرحلهٔ افزودن سایت باز شد', has('آدرس سایت یا سرور'));
+act(msgU($VEX, '❌ انصراف'));
+chk('انصراف همچنان کار می‌کند', has('انصراف'));
+
+// محتوای واقعیِ مرحله نباید ربوده شود
+act(msgU($VEX, '➕ افزودن سایت'));
+act(msgU($VEX, 'http://127.0.0.1:8199/navsite'));
+chk('ورودیِ واقعیِ مرحله سرِ جایش رفت', (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `user_id` = ? AND `target` = ?', [$VEX, 'http://127.0.0.1:8199/navsite']) === 1);
+
+// پیام همگانیِ ادمین نباید ربوده شود (استثنای await_broadcast)
+act(cbU($ADMIN, 'abroadcast'));
+chk('مرحلهٔ پیام همگانی باز شد', has('پیام همگانی'));
+$cpBefore = (int)Db::val("SELECT COUNT(*) FROM `events` WHERE `kind` = 'broadcast'");
+act(msgU($ADMIN, '⚙️ تنظیمات سرور فردا سرویس می‌رود'));
+$cpAfter = (int)Db::val("SELECT COUNT(*) FROM `events` WHERE `kind` = 'broadcast'");
+chk('متنِ پیام همگانی با «⚙️» ربوده نشد و همگانی اجرا شد',
+    $cpAfter === $cpBefore + 1
+    && !has('یک عدد وارد کنید')
+    && (string)Db::val('SELECT `step` FROM `user` WHERE `id` = ?', [$ADMIN]) !== 'await_setting',
+    'broadcast ' . $cpBefore . '→' . $cpAfter);
+
+// نمایش وضعیت کرون در خوش‌آمد و پنل باید یکی باشد
+act(msgU($ADMIN, '/start'));
+$welcome = blob();
+act(cbU($ADMIN, 'apanel'));
+$panel = blob();
+$wSaysUnhealthy = str_contains($welcome, 'کرون هنوز راه‌اندازی نشده');
+$pSaysUnhealthy = str_contains($panel, 'کرون راه‌اندازی نشده');
+$pSaysActive    = str_contains($panel, 'موتور چک: 🟢 فعال');
+chk('وضعیت کرون در خوش‌آمد و پنل متناقض نیست',
+    !($wSaysUnhealthy && $pSaysActive),
+    'خوش‌آمد=' . ($wSaysUnhealthy ? 'ناسالم' : 'سالم') . ' / پنل=' . ($pSaysUnhealthy ? 'ناسالم' : ($pSaysActive ? 'فعال' : '?')));
+
+// ==================================================================
+section('۶) نتیجهٔ نهایی');
 // ==================================================================
 chk('هیچ استثنای مدیریت‌نشده‌ای رخ نداد', empty($GLOBALS['ERRORS']),
     implode(' | ', array_slice($GLOBALS['ERRORS'], 0, 3)));

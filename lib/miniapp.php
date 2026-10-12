@@ -200,10 +200,7 @@ class MiniApp
         }
 
         $share = (string)($s['share_token'] ?? '');
-        if ($base === '') {
-            $base = rtrim((string)(appConfig()['base_url'] ?? ''), '/');
-            if ($base === '' && !empty(appConfig()['domain'])) $base = 'https://' . appConfig()['domain'];
-        }
+        if ($base === '') $base = effectiveBaseUrl();
 
         return [
             'id'           => (int)$s['id'],

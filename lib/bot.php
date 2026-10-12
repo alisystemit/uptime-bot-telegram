@@ -1707,18 +1707,27 @@ class Bot
             // ---------- ادمین: توقف سراسری ----------
             case 'pause': {
                 if (!$this->requireAdmin($msgId)) return;
-                if (Db::getBool('pause_all', false)) { $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu()); return; }
+                if (Db::getBool('pause_all', false)) {
+                    $this->edit($msgId, "⏸ چک سراسری همین حالا هم متوقف است.");
+                    return;
+                }
+                $sites = (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `paused` = 0');
                 Db::set('pause_all', '1');
                 Db::set('pause_global_since', date('Y-m-d H:i:s'));
                 Db::logEvent($this->uid, 'pause_global', '');
                 $this->edit($msgId, "⏸ <b>چک سراسری متوقف شد</b>\n\n"
-                    . "هیچ سایتی تا ادامهٔ مجدد بررسی نمی‌شود.\n"
-                    . "مدت توقف در «آمار» لحاظ می‌شود.\n\n" . $this->adminPanelText(), $this->adminPanelMenu());
+                    . "هیچ سایتی تا زدن «▶️ ادامهٔ چک سراسری» بررسی نمی‌شود.\n"
+                    . "مدت توقف در «📊 آمار» لحاظ می‌شود.\n"
+                    . "سایت‌های تحت مانیتور: " . faNum($sites) . "\n\n"
+                    . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                 return;
             }
             case 'resume': {
                 if (!$this->requireAdmin($msgId)) return;
-                if (!Db::getBool('pause_all', false)) { $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu()); return; }
+                if (!Db::getBool('pause_all', false)) {
+                    $this->edit($msgId, "▶️ چک سراسری همین حالا هم فعال است.");
+                    return;
+                }
                 $since = Db::get('pause_global_since');
                 $dur = $since ? max(0, time() - strtotime($since)) : 0;
                 $total = Db::getInt('pause_global_total', 0) + $dur;
@@ -1726,24 +1735,38 @@ class Bot
                 Db::set('pause_global_total', (string)$total);
                 Db::set('pause_global_since', '');
                 Db::logEvent($this->uid, 'resume_global', (string)$dur);
-                $this->edit($msgId, "▶️ <b>چک سراسری ادامه یافت</b>\n⌛️ مدت توقف: " . faDuration($dur)
-                    . "\n📈 مجموع مدت توقف: " . faDuration($total) . "\n\n" . $this->adminPanelText(), $this->adminPanelMenu());
+                $this->edit($msgId, "▶️ <b>چک سراسری ادامه یافت</b>\n\n"
+                    . "⌛️ مدت این توقف: " . faDuration($dur) . "\n"
+                    . "📈 مجموع توقف‌های امروز/کل: " . faDuration($total) . "\n\n"
+                    . "⚠️ توجه: بررسی سایت‌ها فقط وقتی ادامه دارد که <b>کرون</b> روی سرور اجرا شود."
+                    . "\n(راهنما: «⏰ کرون چک» در پنل مدیریت)\n\n"
+                    . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                 return;
             }
 
             // ---------- ادمین: تنظیمات ----------
             case 'set': {
                 if (!$this->requireAdmin($msgId)) return;
+                // دکمه‌های «چرخشی» فقط متنِ مربوط به خودشان را برمی‌گردانند.
+                // چون کیبوردِ پنل متنی (reply) است، دکمه‌ها خودشان روی صفحه
+                // می‌مانند؛ پس فرستادن دوبارهٔ کل پنل فقط شلوغی و سردرگمی است.
                 if ($arg === 'notify') {
                     $cur = Db::getBool('notify', true);
                     Db::set('notify', $cur ? '0' : '1');
-                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    $this->edit($msgId, "🔔 <b>اعلان‌های سراسری</b>\n\n"
+                        . "قبل: " . ($cur ? 'روشن' : 'خاموش') . "\n"
+                        . "بعد: <b>" . ($cur ? 'خاموش' : 'روشن') . "</b>\n\n"
+                        . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                     return;
                 }
                 if ($arg === 'notify_slow') {
                     $cur = Db::getBool('notify_slow', true);
                     Db::set('notify_slow', $cur ? '0' : '1');
-                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    $this->edit($msgId, "🐢 <b>اعلان کندی</b>\n\n"
+                        . "قبل: " . ($cur ? 'روشن' : 'خاموش') . "\n"
+                        . "بعد: <b>" . ($cur ? 'خاموش' : 'روشن') . "</b>\n\n"
+                        . "کندی یعنی پاسخ سایت از حد مجاز بیشتر شده ولی قطع نیست.\n\n"
+                        . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                     return;
                 }
                 if ($arg === 'access_mode') {
@@ -1753,7 +1776,23 @@ class Bot
                     Db::set('access_mode', $next);
                     if ($next === 'open') Db::q('UPDATE `user` SET `access` = 1 WHERE `is_admin` = 0');
                     Db::logEvent($this->uid, 'setting', 'access_mode=' . $next);
-                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    $names = ['open' => '🔓 باز', 'code' => '🎟 کد فعال‌سازی', 'paid' => '💳 پرداخت'];
+                    $hint = ['open' => 'همه می‌توانند بدون محدودیت استفاده کنند.',
+                        'code' => 'کاربر باید کد فعال‌سازی وارد کند.',
+                        'paid' => 'کاربر باید اشتراک بخرد.'][$next] ?? '';
+                    $extra = '';
+                    if ($next === 'paid' && Db::getInt('price', 0) <= 0) {
+                        $extra = "\n\n⚠️ <b>قیمت اشتراک تنظیم نشده!</b> از «🛒 قیمت اشتراک» آن را وارد کنید،"
+                            . " وگرنه خرید برای کاربران ممکن نیست.";
+                    }
+                    if ($next === 'paid' && (string)Db::get('card', '') === '') {
+                        $extra .= "\n⚠️ <b>شماره کارت تنظیم نشده!</b> از «💳 شماره کارت» آن را وارد کنید.";
+                    }
+                    $this->edit($msgId, "🔓 <b>حالت دسترسی</b>\n\n"
+                        . "قبل: " . ($names[$cur] ?? $cur) . "\n"
+                        . "بعد: <b>" . ($names[$next] ?? $next) . "</b>\n\n"
+                        . $hint . $extra . "\n\n"
+                        . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                     return;
                 }
                 if ($arg === 'group_mention') {
@@ -1763,7 +1802,15 @@ class Bot
                     Db::set('group_mention', $next);
                     Db::exec('UPDATE `chat_hub` SET `mention` = ?', [$next]);
                     Db::logEvent($this->uid, 'setting', 'group_mention=' . $next);
-                    $this->edit($msgId, $this->adminPanelText(), $this->adminPanelMenu());
+                    $names = ['none' => '🚫 بدون منشن', 'admins' => '👥 فقط ادمین‌ها', 'all' => '👥 همهٔ اعضا'];
+                    $hint = ['none' => 'هیچ‌کس در گروه منشن نمی‌شود.',
+                        'admins' => 'فقط ادمین‌های گروه منشن می‌شوند.',
+                        'all' => 'همهٔ اعضای گروه منشن می‌شوند (پیام شلوغ می‌شود).'][$next] ?? '';
+                    $this->edit($msgId, "🗣 <b>منشن در گروه</b>\n\n"
+                        . "قبل: " . ($names[$cur] ?? $cur) . "\n"
+                        . "بعد: <b>" . ($names[$next] ?? $next) . "</b>\n\n"
+                        . $hint . "\n\n"
+                        . "برای برگشتن به کل پنل: «🏠 منو» سپس «⚙️ پنل مدیریت».");
                     return;
                 }
                 $labels = [
@@ -2400,14 +2447,20 @@ class Bot
             . "▫️ اپلیکیشن: <code>" . tgH(miniAppUrl() ?: '—') . "</code>\n"
             . "▫️ صفحهٔ وضعیت: <code>" . tgH((function () {
                 $b = effectiveBaseUrl();
-                return $b !== '' ? $b . '/status.php?u=&lt;توکن&gt;' : '—';
+                // «توکن» باید داخل HTML به‌صورت موجودیت بیاید؛ دوباره escape نشود
+                return $b !== '' ? $b . '/status.php?u=؟' : '—';
             })()) . "</code>";
     }
 
     private function cronText(): string
     {
         $dir = UPTIME_ROOT;
-        $base = rtrim((string)($this->cfg['base_url'] ?? ''), '/');
+        // آدرس واقعی سایت (اولویت با تنظیم پنل) تا دستور کرون قابل کپی باشد
+        $base = effectiveBaseUrl();
+        if ($base === '') {
+            $base = rtrim((string)($this->cfg['base_url'] ?? ''), '/');
+            if ($base === '') $base = 'https://' . trim((string)($this->cfg['domain'] ?? ''));
+        }
         $secret = hash('sha256', $this->token . '_uptime_cron_secret');
         return "⏰ <b>راه‌اندازی کرون چک (هر ۲۰ ثانیه)</b>\n\n"
             . "بدون کرون، چک‌ها فقط هنگام بازدید صفحهٔ وضعیت انجام می‌شوند.\n\n"
@@ -2511,16 +2564,25 @@ class Bot
      */
     private static function adminPanelRows(): array
     {
+        // دکمه‌های «چرخشی» وضعیت فعلی را در برچسبشان نشان می‌دهند.
+        // بدون این، برچسب ثابت می‌ماند و ادمین فکر می‌کند دکمه کار نکرده —
+        // چون نمی‌فهمد زدنش چه چیزی را عوض کرده یا الان وضعیت چیست.
+        $accessLabel = ['open' => '🔓 باز', 'code' => '🎟 کد', 'paid' => '💳 پرداخت'][Db::get('access_mode', 'open')] ?? '🔓 دسترسی';
+        $mentionLabel = ['none' => '🚫 بدون', 'admins' => '👥 ادمین', 'all' => '👥 همه'][Db::get('group_mention', 'admins')] ?? '🗣 منشن';
+        $slowOn = Db::getBool('notify_slow', true);
+        $notifyOn = Db::getBool('notify', true);
         return [
             [['text' => '🔢 سقف کاربران'], ['text' => '🌐 سقف سایت']],
             [['text' => '💎 سقف سایت ویژه'], ['text' => '⏱ فاصلهٔ چک']],
-            [['text' => '🚨 آستانهٔ هشدار'], ['text' => '🔓 حالت دسترسی']],
+            [['text' => '🚨 آستانهٔ هشدار'], ['text' => $accessLabel . ' ‹حالت دسترسی›']],
             [['text' => '🛒 قیمت اشتراک'], ['text' => '💳 شماره کارت']],
             [['text' => '📆 مدت اشتراک (روز)'], ['text' => '👥 سقف مانیتور گروه']],
             [['text' => '🔐 هشدار گواهی (روز)'], ['text' => '🌐 هشدار دامنه (روز)']],
-            [['text' => '📇 سقف دامنه'], ['text' => '🔕 اعلان کندی']],
+            [['text' => '📇 سقف دامنه'],
+             ['text' => ($slowOn ? '🔔 کندی: روشن' : '🔕 کندی: خاموش') . ' ‹تغییر›']],
             [['text' => '🌐 آدرس اپلیکیشن'], ['text' => '🌐 دامنه ربات']],
-            [['text' => Db::getBool('notify', true) ? '🔕 خاموش کردن اعلان‌ها' : '🔔 روشن کردن اعلان‌ها'], ['text' => '🗣 منشن در گروه']],
+            [['text' => ($notifyOn ? '🔔 اعلان‌ها: روشن' : '🔕 اعلان‌ها: خاموش') . ' ‹تغییر›'],
+             ['text' => $mentionLabel . ' ‹منشن گروه›']],
             [['text' => Db::getBool('pause_all', false) ? '▶️ ادامهٔ چک سراسری' : '⏸ توقف سراسری چک']],
             [['text' => '🎟 کدهای فعال‌سازی'], ['text' => '📊 آمار']],
             [['text' => '🏦 درگاه‌های پرداخت'], ['text' => '⏰ کرون چک']],
@@ -2538,6 +2600,22 @@ class Bot
      */
     private function adminPanelAction(string $text): ?string
     {
+        // برچسب‌های وضعیت‌محور («🔔 کندی: روشن ‹تغییر›») پویا هستند، پس اول
+        // با الگو تشخیص داده می‌شوند. علاوه بر این، برچسب‌های ثابت و نسخهٔ
+        // قدیمی‌ترشان هم پذیرفته می‌شود تا پیام‌های قدیمی روی کیبوردِ کاربر
+        // همچنان کار کنند.
+        $patterns = [
+            '/^🔔?\s*کندی:/u'  => 'set:notify_slow',
+            '/^🔕?\s*کندی:/u'  => 'set:notify_slow',
+            '/^🔔 اعلان‌ها:/u' => 'set:notify',
+            '/^🔕 اعلان‌ها:/u' => 'set:notify',
+            '/^(🔓|🎟|💳)\s*(باز|کد|پرداخت)?\s*‹حالت دسترسی›/u' => 'set:access_mode',
+            '/^(🚫 بدون|👥 ادمین|👥 همه)\s*‹منشن گروه›/u'        => 'set:group_mention',
+        ];
+        foreach ($patterns as $re => $act) {
+            if (preg_match($re, $text)) return $act;
+        }
+
         static $map = [
             '🔢 سقف کاربران'          => 'set:max_users',
             '🌐 سقف سایت'             => 'set:max_sites',
@@ -2553,7 +2631,9 @@ class Bot
             '🌐 هشدار دامنه (روز)'     => 'set:domain_warn_days',
             '📇 سقف دامنه'            => 'set:max_domains',
             '🔕 اعلان کندی'            => 'set:notify_slow',
+            '🔔 اعلان کندی'            => 'set:notify_slow',
             '🌐 آدرس اپلیکیشن'        => 'set:base_url',
+            '🌐 آدرس اپلیکیشن (base_url)' => 'set:base_url',
             '🌐 دامنه ربات'           => 'set:domain',
             '🔕 خاموش کردن اعلان‌ها'   => 'set:notify',
             '🔔 روشن کردن اعلان‌ها'    => 'set:notify',

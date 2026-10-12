@@ -283,7 +283,7 @@ function historyBarAscii(array $history): string
 function statusUrl(array $cfg, string $shareToken): string
 {
     // effectiveBaseUrl() اولویت را به تنظیم پنل مدیریت می‌دهد، بعد config.php
-    $base = function_exists('effectiveBaseUrl') ? effectiveBaseUrl() : '';
+    $base = effectiveBaseUrl();
     if ($base === '') {
         $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
         if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));

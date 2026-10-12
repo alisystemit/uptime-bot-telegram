@@ -149,12 +149,15 @@ for ($i = 0; $i < 4; $i++) {
     Db::q('UPDATE `site` SET `last_check_at` = NULL WHERE `id` = ?', [$sid]);
     Monitor::round();
 }
+// پاداش آپتایم «یک‌بار در هر ساعت برای هر سایت» است، نه برای هر کاربر؛ پس
+// تعدادش باید برابرِ تعداد سایت‌های این کاربر باشد، نه ۱.
+$siteN = max(1, (int)Db::val('SELECT COUNT(*) FROM `site` WHERE `user_id` = ? AND `paused` = 0', [$uid]));
 $evD = (int)Db::val("SELECT COUNT(*) FROM `events` WHERE `kind` = 'rank_daily' AND `user_id` = ?", [$uid]);
 $evU = (int)Db::val("SELECT COUNT(*) FROM `events` WHERE `kind` = 'rank_uptime' AND `user_id` = ?", [$uid]);
 $pts = (int)Db::val('SELECT `user_points` FROM `user` WHERE `id` = ?', [$uid]);
-chk('امتیاز روزانه فقط یک‌بار در ۴ چک', $evD === 1, (string)$evD);
-chk('پاداش ساعتی فقط یک‌بار در ۴ چک', $evU === 1, (string)$evU);
-chk('مجموع امتیاز درست است', $pts === 1 + 5, (string)$pts);
+chk("امتیاز روزانه فقط یک‌بار در ۴ چک", $evD === 1, (string)$evD);
+chk("پاداش ساعتی هر سایت فقط یک‌بار ({$siteN} سایت)", $evU === $siteN, "{$evU} (انتظار {$siteN})");
+chk('مجموع امتیاز درست است', $pts === 1 + 5 * $siteN, "{$pts} (انتظار " . (1 + 5 * $siteN) . ")");
 $logHits = 0;
 foreach (glob(UPTIME_ROOT . '/logs/*.log') ?: [] as $lf) {
     $logHits += substr_count((string)file_get_contents($lf), 'Ranking points system error')

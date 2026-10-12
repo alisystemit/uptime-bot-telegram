@@ -1,4 +1,4 @@
-<?php
+﻿<?php
 /**
  * ===== تست «تک‌تکِ دکمه‌ها» =====
  *
@@ -240,7 +240,125 @@ act(msgU($ADMIN, '⚙️ پنل مدیریت'));
 chk('پنل مدیریت باز شد', has('پنل مدیریت'));
 foreach ($panelTexts as $t) clickText($t, 'پنل');
 
+// برچسب‌هایی که واقعاً روی کیبورد پنل چاپ می‌شوند را هم کلیک می‌کنیم —
+// این‌ها «همان چیزی» هستند که ادمین روی صفحه می‌بیند و می‌زند.
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+$realLabels = [];
+foreach ($GLOBALS['OUT'] as $c) {
+    foreach (($c['params'] ?? []) as $k => $v) {
+        if ($k !== 'reply_markup' || !is_string($v)) continue;
+        $d = json_decode($v, true);
+        foreach (($d['keyboard'] ?? []) as $row) foreach ((array)$row as $b) $realLabels[] = (string)$b['text'];
+    }
+}
+$realLabels = array_values(array_unique($realLabels));
+chk('پنل برچسب‌های واقعی دارد', count($realLabels) > 10, 'تعداد=' . count($realLabels));
+foreach ($realLabels as $t) {
+    if (str_contains($t, 'تغییر') || str_contains($t, '‹')) continue; // در بخش ۱-ب امتحان می‌شوند
+    clickText($t, 'برچسب واقعی');
+}
+
 // ==================================================================
+section('1-B) dynamic-status buttons: live label + real effect');
+// ==================================================================
+// دکمه‌هایی مثل «🔕 اعلان کندی» یا «🔓 حالت دسترسی» وضعیت فعلی را در
+// برچسبشان نشان می‌دهند. اگر برچسب و مقدارِ دیتابیس از هم جدا باشند، ادمین
+// فکر می‌کند دکمه کار نمی‌کند. اینجا هر دو را با هم می‌سنجیم.
+function kbTexts(): array
+{
+    $out = [];
+    foreach ($GLOBALS['OUT'] as $c) {
+        foreach (($c['params'] ?? []) as $k => $v) {
+            if ($k !== 'reply_markup' || !is_string($v)) continue;
+            $d = json_decode($v, true);
+            foreach (($d['keyboard'] ?? []) as $row) {
+                foreach ((array)$row as $b) if (isset($b['text'])) $out[] = (string)$b['text'];
+            }
+        }
+    }
+    return $out;
+}
+function panelButton(string $needle): ?string
+{
+    foreach (kbTexts() as $t) if (str_contains($t, $needle)) return $t;
+    return null;
+}
+
+// [مقدار اولیه در دیتابیس, بخشی از برچسب, عنوان پیام, مقداری که باید بعدش باشد]
+$pre = [
+    'notify_slow'   => ['1',   'کندی:',     '🐢 <b>اعلان کندی</b>',         '0'],
+    'access_mode'   => ['paid', 'حالت دسترسی', '🔓 <b>حالت دسترسی</b>',   'code'],
+    'group_mention' => ['all',  'منشن گروه',   '🗣 <b>منشن در گروه</b>',   'none'],
+    'notify'        => ['1',   'اعلان‌ها:', '🔔 <b>اعلان‌های سراسری</b>', '0'],
+];
+
+foreach ($pre as $key => [$initVal, $needle, $title, $wantAfter]) {
+    Db::set($key, $initVal);
+    act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+
+    $label = panelButton($needle);
+    if ($label === null) {
+        chk("دکمهٔ «{$needle}» روی کیبورد پنل هست", false, 'پیدا نشد');
+        continue;
+    }
+    // برچسب باید وضعیت واقعی دیتابیس را نشان دهد، نه یک متن ثابت
+    static $labelNeedle = [
+        'notify_slow'   => 'روشن',   // مقدار اولیه ۱ است
+        'notify'        => 'روشن',   // مقدار اولیه ۱ است
+        'access_mode'   => 'پرداخت', // مقدار اولیه paid است
+        'group_mention' => 'همه',    // مقدار اولیه all است
+    ];
+    chk("برچسب «{$label}» وضعیت {$key} را نشان می‌دهد",
+        str_contains($label, $labelNeedle[$key]), "برچسب={$label}");
+
+    $before = Db::get($key, '(unset)');
+    // بررسی پاسخ باید داخل callback باشد، چون بعد از برگشت outbox مصرف شده است
+    clickText($label, 'وضعیت‌محور', function (string $reply) use ($key, $wantAfter, $label, $title) {
+        $plain = strip_tags($reply);
+        chk("«{$label}» فقط پیامِ خودش را داد (نه کل پنل)",
+            !str_contains($plain, 'سقف مانیتور گروه:') && !str_contains($plain, 'آدرس‌های فعال'),
+            'کل متن پنل دوباره فرستاده شده');
+        chk("«{$label}» عنوانِ خودش را داشت",
+            str_contains($plain, strip_tags($title)), mb_substr($plain, 0, 70));
+        chk("«{$label}» «قبل/بعد» را نشان داد",
+            str_contains($plain, 'قبل:') && str_contains($plain, 'بعد:'),
+            mb_substr($plain, 0, 70));
+        $newVal = ['0' => 'خاموش', '1' => 'روشن'][$wantAfter] ?? $wantAfter;
+        chk("«{$label}» مقدار تازه «{$newVal}» را گفت",
+            str_contains($plain, $newVal), mb_substr($plain, 0, 70));
+    });
+    $after = Db::get($key, '(unset)');
+    chk("«{$label}» مقدار {$key} را عوض کرد", $before !== $after, "{$before}→{$after}");
+}
+
+// برچسب‌های قدیمی (روی کیبوردِ از قبل نصب‌شدهٔ کاربر) هم باید کار کنند
+$legacy = [
+    ['🔕 اعلان کندی', 'notify_slow'],
+    ['🔔 اعلان کندی', 'notify_slow'],
+    ['🔓 حالت دسترسی', 'access_mode'],
+    ['🗣 منشن در گروه', 'group_mention'],
+    ['🔕 خاموش کردن اعلان‌ها', 'notify'],
+    ['🔔 روشن کردن اعلان‌ها', 'notify'],
+];
+foreach ($legacy as [$old, $key]) {
+    $before = Db::get($key, '(unset)');
+    act(msgU($ADMIN, $old));
+    $after = Db::get($key, '(unset)');
+    chk("برچسب قدیمی «{$old}» هنوز کار می‌کند", $before !== $after, "{$before}→{$after}");
+    chk("برچسب قدیمی «{$old}» پاسخ داد", trim(strip_tags(blob())) !== '', 'بی‌پاسخ');
+    Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$ADMIN]);
+}
+
+// موجودیت HTML نباید به‌صورت خام (`&lt;`) به ادمین نشان داده شود
+Db::set('base_url', 'https://x.example/bots/y');
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+$panelBlob = '';
+foreach ($GLOBALS['OUT'] as $c) foreach (($c['params'] ?? []) as $k => $v) if ($k === 'text') $panelBlob .= (string)$v;
+chk('پنل متن خام &lt; نشان نمی‌دهد', !str_contains($panelBlob, '&lt;'), 'توکن لو رفت');
+chk('پنل آدرس صفحهٔ وضعیت را نشان می‌دهد', str_contains(strip_tags($panelBlob), 'status.php?u='));
+Db::set('base_url', '');
+
+// ==================================================================// ==================================================================
 section('۲) منوی ادمین، آمار، کرون، کدها');
 // ==================================================================
 foreach (['astats', 'cron', 'codes'] as $entry) {
@@ -298,6 +416,48 @@ foreach ($textButtons as $t) {
     Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$ADMIN]);
 }
 chk('همهٔ دکمه‌های متنی جواب دادند', $badText === [], 'بدون جواب: ' . implode(' | ', $badText));
+
+// ==================================================================
+// ==================================================================
+section('۵-ب) توقف/ادامهٔ سراسری: اثر واقعی روی دیتابیس');
+// ==================================================================
+// این دکمه‌ها وضعیت سراسری ربات را عوض می‌کنند. تست باید مطمئن شود که
+// «فقط پیام نمی‌دهند» بلکه واقعاً pause_all را روشن/خاموش می‌کنند، و اینکه
+// دکمهٔ «stop» وقتی از قبل متوقف است، بی‌خطر (idempotent) باشد.
+
+Db::set('pause_all', '0');
+Db::set('pause_global_since', '');
+
+// ۱) «ادامهٔ چک» وقتی از قبل فعال است → نباید چیزی را بشکند
+act(msgU($ADMIN, '▶️ ادامهٔ چک سراسری'));
+chk('ادامهٔ چک وقتی فعال است، pause_all را ۰ نگه داشت',
+    !Db::getBool('pause_all', false));
+chk('ادامهٔ چک وقتی فعال است، «همین حالا هم فعال است» گفت',
+    has('همین حالا هم فعال است'));
+
+// ۲) «توقف سراسری» → باید واقعاً روشن کند
+act(msgU($ADMIN, '⏸ توقف سراسری چک'));
+chk('توقف سراسری، pause_all را ۱ کرد', Db::getBool('pause_all', false));
+chk('توقف سراسری، زمان شروع را ثبت کرد', (string)Db::get('pause_global_since') !== '');
+chk('توقف سراسری تأیید داد', has('متوقف شد'));
+chk('توقف سراسری فقط پیام خودش را داد (نه کل پنل)',
+    !str_contains(strip_tags(blob()), 'سقف مانیتور گروه:'));
+
+// ۳) زدن دوباره در حالت «متوقف» → بی‌خطر
+act(msgU($ADMIN, '⏸ توقف سراسری چک'));
+chk('توقف دوباره، «هم متوقف است» گفت', has('همین حالا هم متوقف است'));
+chk('توقف دوباره، همچنان متوقف است', Db::getBool('pause_all', false));
+
+// ۴) «ادامهٔ چک» → باید خاموش کند و مدت را جمع بزند
+act(msgU($ADMIN, '▶️ ادامهٔ چک سراسری'));
+chk('ادامهٔ چک، pause_all را ۰ کرد', !Db::getBool('pause_all', false));
+chk('ادامهٔ چک، زمان شروع را پاک کرد', (string)Db::get('pause_global_since') === '');
+chk('ادامهٔ چک تأیید داد', has('ادامه یافت'));
+chk('ادامهٔ چک فقط پیام خودش را داد', !str_contains(strip_tags(blob()), 'سقف مانیتور گروه:'));
+
+Db::set('pause_all', '0');
+Db::set('pause_global_since', '');
+Db::set('pause_global_total', '0');
 
 // ==================================================================
 section('۶) آدرس پایه: اعتبارسنجی و اثرگذاری واقعی');

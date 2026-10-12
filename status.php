@@ -20,8 +20,6 @@ $tokU = trim((string)($_GET['u'] ?? ''));
 $tokG = trim((string)($_GET['g'] ?? ''));
 $tokS = trim((string)($_GET['s'] ?? ''));
 $tz   = tzOffset();
-$base = rtrim((string)($cfg['base_url'] ?? ''), '/');
-if ($base === '' && !empty($cfg['domain'])) $base = 'https://' . $cfg['domain'];
 
 $fail = static function (string $title, string $msg, int $code = 500) {
     http_response_code($code);
@@ -55,6 +53,10 @@ if (!$ctx) {
 
 $sites  = $ctx['sites'];
 $tz     = tzOffset();
+// از effectiveBaseUrl() استفاده می‌کنیم تا لینک‌های داخلی این صفحه (CSV،
+// بازگشت، …) با «آدرس اپلیکیشن» پنل مدیریت هماهنگ باشند — نه فقط config.php.
+// (بعد از appBoot: قبل از آن Db تنظیمات را ندارد و به config برمی‌گردد.)
+$base = effectiveBaseUrl();
 $summary = Stats::summaryOf($sites);
 $engine = Stats::engine();
 $scopeQ = $ctx['kind'] === Page::KIND_SITE ? 's=' . rawurlencode($tokS)

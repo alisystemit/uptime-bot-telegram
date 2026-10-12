@@ -25,6 +25,36 @@ function out($code, $json, array $headers = [])
     exit;
 }
 
+// ---------------------------------------------------------------- شبیه‌ساز تلگرام
+// وب‌سرور داخلی PHP فرایندِ جداست، پس «حالت آفلاین» کلاینتِ تست روی آن اثری
+// ندارد و هر پیام به api.telegram.org واقعی می‌رفت؛ هر کدام تا ۳۰ ثانیه
+// معطل می‌شد و چون سرور تک‌کاره است، بقیهٔ تست‌ها را قفل می‌کرد.
+// با telegram_api_base همهٔ این درخواست‌ها همین‌جا بی‌درنگ جواب می‌گیرند.
+if (preg_match('#^/bot[^/]+/([A-Za-z0-9_]+)$#', $path, $m)) {
+    $method = $m[1];
+    $stateFile = __DIR__ . '/.mock_state.json';
+    $state = is_file($stateFile) ? (json_decode((string)file_get_contents($stateFile), true) ?: []) : [];
+    $state['tg_calls'][] = ['method' => $method, 'params' => $_REQUEST];
+    @file_put_contents($stateFile, json_encode($state, JSON_UNESCAPED_UNICODE), LOCK_EX);
+
+    $result = true;
+    if ($method === 'sendMessage' || $method === 'editMessageText' || $method === 'sendPhoto'
+        || $method === 'sendDocument' || $method === 'sendMediaGroup') {
+        $result = ['message_id' => 900000 + count($state['tg_calls'])];
+    } elseif ($method === 'getUpdates') {
+        $result = [];
+    } elseif ($method === 'getChatMember' || $method === 'getChat') {
+        $result = ['status' => 'administrator', 'id' => $_REQUEST['chat_id'] ?? 0];
+    } elseif ($method === 'getFile') {
+        $result = ['file_id' => 'mockfile', 'file_path' => 'documents/mock.pdf'];
+    } elseif ($method === 'answerCallbackQuery' || $method === 'setMyCommands') {
+        $result = true;
+    } else {
+        out(200, ['ok' => true, 'result' => true]);
+    }
+    out(200, ['ok' => true, 'result' => $result]);
+}
+
 if (strpos($path, '/mock/') !== 0) out(404, ['error' => 'not found']);
 $parts = explode('/', trim($path, '/'));
 $gw = $parts[1] ?? '';

@@ -113,6 +113,14 @@ function appBoot(bool $migrate = true): array
 {
     $cfg = appConfig();
     Db::setConfig($cfg);
+
+    // آدرس API تلگرام می‌تواند در کانفیگ عوض شود. در محیط تست این کار لازم است،
+    // چون وب‌سرورِ داخلی PHP هم فرایندِ جداست و «حالت آفلاین» کلاینت روی آن
+    // اثری ندارد؛ بدون این، هر پیامِ تست به api.telegram.org واقعی می‌رفت و
+    // تا ۳۰ ثانیه معطل می‌ماند (و چون سرور تک‌کاره است، بقیهٔ تست‌ها را هم قفل می‌کرد).
+    $tgBase = trim((string)($cfg['telegram_api_base'] ?? ''));
+    if ($tgBase !== '') BotApi::setBaseUrl($tgBase);
+
     if ($migrate) Db::boot();
     return $cfg;
 }

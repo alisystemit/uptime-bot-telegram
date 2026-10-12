@@ -159,8 +159,14 @@ class Pay
     /** آدرس بازگشت/وب‌هوک برای یک درگاه */
     public static function callbackUrl(string $code): string
     {
-        $base = rtrim((string)(appConfig()['base_url'] ?? ''), '/');
-        if ($base === '') $base = 'https://' . trim((string)(appConfig()['domain'] ?? ''));
+        // حتماً باید با آدرس واقعی سایت یکی باشد، وگرنه درگاه پرداخت پول را
+        // به دامنهٔ اشتباه می‌فرستد و پرداخت‌ها بی‌صدا شکست می‌خورند.
+        $base = effectiveBaseUrl();
+        if ($base === '') {
+            $cfg = appConfig();
+            $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
+            if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+        }
         return $base . '/pay.php?g=' . rawurlencode($code);
     }
 

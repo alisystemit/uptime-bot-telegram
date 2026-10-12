@@ -69,8 +69,14 @@ class Group
     /** لینک صفحهٔ وضعیت عمومی یک گروه/کانال */
     public static function statusUrl(array $cfg, array $hub): string
     {
-        $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
-        if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+        // از effectiveBaseUrl() استفاده می‌کنیم تا لینک‌های گروه هم با
+        // «آدرس اپلیکیشن» پنل مدیریت هماهنگ باشند (نه فقط config.php).
+        $base = effectiveBaseUrl();
+        if ($base === '') {
+            $base = rtrim((string)($cfg['base_url'] ?? ''), '/');
+            if ($base === '') $base = 'https://' . trim((string)($cfg['domain'] ?? ''));
+        }
+        if ($base === '') return '';
         return $base . '/status.php?g=' . rawurlencode((string)$hub['share_token']);
     }
 

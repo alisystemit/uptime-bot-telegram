@@ -61,8 +61,8 @@ try {
 
     // راهنمای کرون + نسخهٔ وب
     $secret = hash('sha256', (string)$cfg['bot_token'] . '_uptime_cron_secret');
-    $base   = rtrim((string)($cfg['base_url'] ?? ''), '/');
-    if ($base === '' && !empty($cfg['domain'])) $base = 'https://' . $cfg['domain'];
+    // آدرس کرون/وب باید با «آدرس اپلیکیشن» پنل مدیریت یکی باشد
+    $base   = effectiveBaseUrl();
     $result['url'] = $base;
     $result['cron'] = [
         'cli'    => 'php ' . __DIR__ . '/cron/checker.php',

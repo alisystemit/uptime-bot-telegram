@@ -24,6 +24,26 @@ class BotApi
      */
     private static array $outbox = [];
 
+    /**
+     * آدرس پایهٔ API. روی سرور واقعی همان api.telegram.org است.
+     *
+     * چرا قابل تغییر است؟ در محیط تست، وب‌سرورِ داخلی PHP هم به تلگرام واقعی
+     * وصل می‌شد و هر پیام تا ۳۰ ثانیه معطل می‌ماند (و چون سرور تک‌کاره است،
+     * کل تست‌های بعدی را هم قفل می‌کرد). با نشاندن این آدرس به سرور قلابیِ
+     * محلی، تست‌ها سریع و بدون ترافیک بیرونی اجرا می‌شوند.
+     */
+    private static ?string $baseUrl = null;
+
+    public static function setBaseUrl(?string $url): void
+    {
+        self::$baseUrl = ($url === null || $url === '') ? null : rtrim($url, '/');
+    }
+
+    private static function baseUrl(): string
+    {
+        return self::$baseUrl ?? 'https://api.telegram.org';
+    }
+
     public static function offline(bool $on = true): void
     {
         self::$offline = $on;
@@ -69,7 +89,7 @@ class BotApi
             return ['ok' => true, 'offline' => true, 'result' => ['message_id' => 0]];
         }
         if (!function_exists('curl_init')) { self::logFail($method, 'curl missing'); return ['ok' => false, 'description' => 'curl missing']; }
-        $url = "https://api.telegram.org/bot{$token}/{$method}";
+        $url = self::baseUrl() . "/bot{$token}/{$method}";
         $attempt = 0;
         $lastErr = '';
 

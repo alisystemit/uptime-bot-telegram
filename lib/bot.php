@@ -16,6 +16,15 @@ class Bot
     /** @var mixed */
     private $chatId = 0;
 
+    /**
+     * وقتی روشن است، هر پاسخِ این چرخه با کیبوردِ تازهٔ پنل همراه می‌شود.
+     *
+     * دلیل: پنل «کیبورد معمولی» است و برچسب دکمه‌های وضعیت‌محور مقدارِ
+     * جاری را نشان می‌دهد. اگر کیبورد دوباره فرستاده نشود، برچسبِ روی
+     * گوشی کهنه می‌ماند و ادمین فکر می‌کند دکمه کار نکرده است.
+     */
+    private bool $withPanelKeyboard = false;
+
     public function __construct(array $cfg)
     {
         $this->cfg = $cfg;
@@ -321,12 +330,21 @@ class Bot
         $panelAct = $this->adminPanelAction($cmd);
         if ($panelAct !== null) {
             if (!$this->isAdmin()) { $this->unknown(); return; }
-            $this->onCallback([
-                'id'     => '',
-                'from'   => ['id' => $this->uid],
-                'message' => ['message_id' => 0, 'chat' => ['id' => $this->chatId, 'type' => 'private'], 'text' => $cmd],
-                'data'   => $panelAct,
-            ]);
+            // کیبوردِ پنل با هر پاسخ دوباره فرستاده می‌شود تا برچسب‌های
+            // وضعیت‌محور («🔔 کندی: روشن ‹تغییر›») و دکمهٔ توقف/ادامه،
+            // مقدار تازهٔ دیتابیس را نشان دهند. بدون این، برچسب روی گوشی
+            // کهنه می‌ماند و ادمین فکر می‌کند دکمه کار نکرده.
+            $this->withPanelKeyboard = true;
+            try {
+                $this->onCallback([
+                    'id'     => '',
+                    'from'   => ['id' => $this->uid],
+                    'message' => ['message_id' => 0, 'chat' => ['id' => $this->chatId, 'type' => 'private'], 'text' => $cmd],
+                    'data'   => $panelAct,
+                ]);
+            } finally {
+                $this->withPanelKeyboard = false;
+            }
             return;
         }
 
@@ -840,6 +858,21 @@ class Bot
         }
         if ($base === '') return '';
         return $base . '/status.php?s=' . rawurlencode($token);
+    }
+
+    /**
+     * لینک صفحهٔ وضعیتِ کاربر (همهٔ مانیتورهایش) روی آدرسِ فعال.
+     *
+     * چرا این متد لازم شد؟ پنل قبلاً الگویی مثل «…/status.php?u=؟» نشان می‌داد که
+     * هم توکن نداشت و هم علامت سؤالش عربی بود، پس مستقیماً باز نمی‌شد. حالا
+     * لینک واقعیِ خودِ ادمین ساخته می‌شود و با یک کلیک کار می‌کند.
+     */
+    private function userStatusUrl(): string
+    {
+        $token = (string)($this->u['share_token'] ?? '');
+        $base = effectiveBaseUrl();
+        if ($base === '' || $token === '') return '—';
+        return $base . '/status.php?u=' . rawurlencode($token);
     }
 
     private function revokeShare(int $siteId, int $targetUser): void
@@ -2445,11 +2478,8 @@ class Bot
             . "\n\n<b>🔗 آدرس‌های فعال</b>\n"
             . "▫️ آدرس پایه: <code>" . tgH(effectiveBaseUrl() ?: '— تنظیم نشده —') . "</code>\n"
             . "▫️ اپلیکیشن: <code>" . tgH(miniAppUrl() ?: '—') . "</code>\n"
-            . "▫️ صفحهٔ وضعیت: <code>" . tgH((function () {
-                $b = effectiveBaseUrl();
-                // «توکن» باید داخل HTML به‌صورت موجودیت بیاید؛ دوباره escape نشود
-                return $b !== '' ? $b . '/status.php?u=؟' : '—';
-            })()) . "</code>";
+            // لینک واقعیِ همین ادمین (نه یک الگوی خالی): تا با یک کلیک باز شود
+            . "▫️ صفحهٔ وضعیت: <code>" . tgH($this->userStatusUrl()) . "</code>";
     }
 
     private function cronText(): string
@@ -2810,6 +2840,12 @@ class Bot
 
     private function edit(int $msgId, string $text, ?string $kb = null): void
     {
+        // کیبوردِ پنل باید تازه باشد تا برچسب‌های وضعیت‌محور مقدارِ جدید را
+        // نشان دهند؛ ولی فقط وقتی خودِ این فراخوانی کیبوردی تعیین نکرده
+        // (پیام‌هایی مثل «در حال ورود مقدار» کیبورد اختصاصیِ خودشان دارند).
+        if ($kb === null && $this->withPanelKeyboard && $this->isAdmin()) {
+            $kb = $this->adminPanelMenu();
+        }
         if ($msgId <= 0) { $this->send($text, $kb); return; }
         $extra = [];
         if ($kb !== null) $extra['reply_markup'] = $kb;

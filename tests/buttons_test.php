@@ -501,7 +501,74 @@ Db::set('base_url', '');
 Db::set('domain', '');
 
 // ==================================================================
-section('۷) نتیجه');
+// ==================================================================
+section('6-B) keyboard refresh + a status link that actually opens');
+// ==================================================================
+// دکمه‌های وضعیت‌محور مقدارِ جاری را در برچسبشان می‌نویسند. اگر کیبورد بعد
+// از هر تغییر دوباره فرستاده نشود، برچسبِ روی گوشی کهنه می‌ماند و ادمین
+// فکر می‌کند دکمه کار نکرده. این بخش هر سه را می‌سنجد:
+//   الف) کیبورد تازه همراه پیام آمد
+//   ب) برچسب تازه با مقدارِ واقعیِ دیتابیس می‌خواند
+//   ج) لینک صفحهٔ وضعیت، لینکِ واقعی و بازشدنی است
+
+// [کلید, مقدار اولیه, بخشی از برچسب, مقدار نهایی, متن برچسبِ مورد انتظار]
+$kbCases = [
+    'notify_slow'   => ['1',     'کندی:',     '0',    'خاموش'],
+    'notify'        => ['1',     'اعلان‌ها:', '0',    'خاموش'],
+    'access_mode'   => ['paid',  'حالت دسترسی', 'open', '🔓 باز'],
+    'group_mention' => ['all',   'منشن گروه', 'none',  '🚫 بدون'],
+];
+foreach ($kbCases as $key => [$initVal, $needle, $wantVal, $wantLabel]) {
+    Db::set($key, $initVal);
+    act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+    $before = panelButton($needle);
+    chk("«{$needle}» پیش از تغییر روی کیبورد هست", $before !== null, 'پیدا نشد');
+    if ($before === null) continue;
+
+    act(msgU($ADMIN, (string)$before));
+    $after = panelButton($needle);
+    chk("«{$needle}» کیبورد تازه را هم فرستاد", $after !== null, 'کیبوردِ تازه همراه پیام نبود');
+    chk("«{$needle}» برچسبش عوض شد", $after !== $before, "قبل={$before} بعد={$after}");
+    chk("«{$needle}» برچسب تازه با دیتابیس می‌خواند («{$wantLabel}»)",
+        $after !== null && str_contains($after, $wantLabel), 'برچسب=' . (string)$after);
+    chk("«{$needle}» دیتابیس واقعاً «{$wantVal}» شد", (string)Db::get($key, '?') === $wantVal,
+        (string)Db::get($key, '?'));
+    Db::q("UPDATE `user` SET `step` = 'idle', `temp` = NULL WHERE `id` = ?", [$ADMIN]);
+}
+
+// دکمهٔ توقف/ادامه هم برچسبش باید برعکس شود
+Db::set('pause_all', '0');
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+chk('در حالت فعال، دکمهٔ «توقف سراسری» هست', panelButton('توقف سراسری') !== null);
+act(msgU($ADMIN, '⏸ توقف سراسری چک'));
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+chk('بعد از توقف، «ادامهٔ چک سراسری» هست', panelButton('ادامهٔ چک سراسری') !== null,
+    'برچسب برنگشت');
+act(msgU($ADMIN, '▶️ ادامهٔ چک سراسری'));
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+chk('بعد از ادامه، «توقف سراسری» برگشت', panelButton('توقف سراسری') !== null);
+Db::set('pause_all', '0');
+Db::set('pause_global_since', '');
+Db::set('pause_global_total', '0');
+
+// لینک صفحهٔ وضعیت باید واقعی و بازشدنی باشد، نه الگوی خالی
+Db::set('base_url', 'https://example.test/bots/abc');
+act(msgU($ADMIN, '⚙️ پنل مدیریت'));
+$panelTxt = '';
+foreach ($GLOBALS['OUT'] as $c) foreach (($c['params'] ?? []) as $k => $v) if ($k === 'text') $panelTxt .= (string)$v;
+$plain = strip_tags($panelTxt);
+preg_match('#https?://[^\s<]+status\.php\?u=[^\s<]+#u', $plain, $m);
+$link = $m[0] ?? '';
+chk('پنل لینک صفحهٔ وضعیت داد', $link !== '', mb_substr($plain, 0, 140));
+chk('لینک توکن دارد (الگوی خالی نیست)', $link !== '' && preg_match('/status\.php\?u=[A-Za-z0-9_-]+$/', $link) === 1, $link);
+chk('لینک علامت سؤال لاتین دارد، نه «؟» عربی', $link !== '' && !str_contains($link, "\u{061F}"), 'علامت عربی در لینک');
+$row = Db::one('SELECT `share_token` FROM `user` WHERE `id` = ?', [$ADMIN]);
+chk('لینک همان توکنِ واقعیِ ادمین را دارد',
+    is_array($row) && $link !== '' && str_contains($link, (string)$row['share_token']), $link);
+chk('لینک روی دامنهٔ تنظیم‌شده ساخته شد', str_contains($link, 'https://example.test/bots/abc/'), $link);
+Db::set('base_url', '');
+
+// ==================================================================section('۷) نتیجه');
 // ==================================================================
 chk('هیچ استثنای مدیریت‌نشده‌ای رخ نداد', empty($GLOBALS['ERRORS']),
     implode(' | ', array_slice($GLOBALS['ERRORS'], 0, 3)));

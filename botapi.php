@@ -281,7 +281,7 @@ class BotApi
         $lastErr = '';
         while ($attempt <= self::$maxRetries) {
             if ($attempt > 0) usleep(self::$baseDelay * (2 ** ($attempt - 1)));
-            $ch = curl_init("https://api.telegram.org/bot{$token}/sendDocument");
+            $ch = curl_init(self::baseUrl() . "/bot{$token}/sendDocument");
             if ($ch === false) { $lastErr = 'curl_init failed'; $attempt++; continue; }
             $opts = [
                 CURLOPT_RETURNTRANSFER => true,

@@ -117,6 +117,10 @@
      کمکی: پیدا کردن سایت در حافظه
      ============================================================ */
   function findSite(id) {
+    // در نمای جزئیات، S.site تازه‌ترین دادهٔ همان سایت است؛ overview تا
+    // پیش از رفرش بعدی کهنه می‌ماند. اگر اول از overview بخوانیم، دکمهٔ
+    // «ادامه» وضعیتِ کهنه را می‌بیند و دوباره «pause» می‌فرستد.
+    if (S.view === 'detail' && S.site && S.site.id === id) return S.site;
     var pools = [
       (S.overview && S.overview.sites) || [],
       (S.report && S.report.sites) || [],
@@ -975,6 +979,7 @@
     askDel: askDel,
     openAdd: function () { openSheet('add'); },
     closeAdd: closeAdd,
+    closeDel: closeDel,
     setAddFmt: setAddFmt,
     locked: locked
   };
